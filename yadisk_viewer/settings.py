@@ -26,8 +26,14 @@ SECRET_KEY = 'django-insecure-9w3o&pz2kpxfsdb@mj@1)0ie!mkc2h48qk&0ug#f&880xry%g(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.app.github.dev',  # Доверять всем адресам Codespaces
+]
+
+# Ключевая строка: сообщаем Django, что он работает за HTTPS-прокси
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Application definition
 

@@ -315,26 +315,72 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
         clean_path_str = Path(unquote(file_path).replace('\\', '/')).as_posix().lstrip('/')
         logger.debug(f"Очищенный путь файла для скачивания: '{clean_path_str}'")
     except Exception as e:
-         logger.error(f"Ошибка декодирования/очистки file_path: '{file_path}'. Ошибка: {e}")
-         raise Http404("Некорректный путь файла в URL.")
+        logger.error(f"Ошибка декодирования/очистки file_path: '{file_path}'. Ошибка: {e}")
+        raise Http404("Некорректный путь файла в URL.")
 
     path_to_request = f"/{clean_path_str}" if base_resource_type == 'dir' and clean_path_str else None
-
     file_name = PurePath(clean_path_str).name or "downloaded_file"
 
+    # 1. Получаем ссылку в отдельной короткоживущей сессии
     async with aiohttp.ClientSession() as session:
-        logger.debug(f"Запрос ссылки для скачивания: key={public_key}, path='{path_to_request}', file_name='{file_name}', base_resource_type={base_resource_type}")
+        logger.debug(f"Запрос ссылки: key={public_key}, path='{path_to_request}'")
         download_url = await get_public_resource_download_link(public_key, path=path_to_request, session=session)
 
-        if download_url:
-            logger.info(f"Получена ссылка для '{file_name}', РЕДИРЕКТ на: {download_url[:80]}...")
-            return HttpResponseRedirect(download_url)
-        else:
-            logger.error(f"Не удалось получить ссылку для скачивания: key={public_key}, path='{path_to_request}'. Ошибка 404.")
-            raise Http404(f"Не удалось получить ссылку для скачивания файла '{file_name}' от API Яндекса.")
+    if not download_url:
+        logger.error(f"Не удалось получить ссылку: key={public_key}, path='{path_to_request}'.")
+        raise Http404(f"Не удалось получить ссылку для скачивания файла '{file_name}'.")
 
+    logger.info(f"Получена ссылка для '{file_name}', начинаю стриминг через сервер.")
 
-# --- ZIP Download Helpers ---
+    # 2. Асинхронный генератор с автоматическим повтором при разрыве ДО первого чанка
+    async def stream_from_yadisk():
+        timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=3600)
+        headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/anpain/yadisk_viewer_project)'}
+
+        sent_any = False  # отправили ли уже хоть один чанк браузеру
+
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as stream_session:
+                    async with stream_session.get(download_url, timeout=timeout, headers=headers, allow_redirects=True) as resp:
+                        resp.raise_for_status()
+                        async for chunk in resp.content.iter_chunked(FILE_CHUNK_SIZE):
+                            sent_any = True
+                            yield chunk
+                return  # успешно завершили
+            except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError, RuntimeError) as e:
+                if sent_any:
+                    logger.error(f"Разрыв после начала передачи, повтор невозможен: {e}")
+                    return
+                logger.warning(f"Разрыв до начала передачи, попытка {attempt + 1}/3: {e}")
+                if attempt == 2:
+                    logger.error(f"Все 3 попытки провалились для '{file_name}'.")
+                    return
+                await asyncio.sleep(1)
+            except aiohttp.ClientResponseError as e:
+                logger.error(f"Ошибка HTTP {e.status} при стриминге '{file_name}': {e.message}")
+                return
+            except asyncio.TimeoutError:
+                logger.error(f"Тайм-аут при стриминге '{file_name}'.")
+                return
+            except Exception as e:
+                logger.error(f"Ошибка стриминга '{file_name}': {e}")
+                return
+
+    response = StreamingHttpResponse(
+        stream_from_yadisk(),
+        content_type='application/octet-stream',
+    )
+
+    try:
+        ascii_name = file_name.encode('ascii').decode('ascii')
+        response['Content-Disposition'] = f'attachment; filename="{ascii_name}"'
+    except UnicodeEncodeError:
+        encoded_name = quote(file_name)
+        response['Content-Disposition'] = f"attachment; filename*=UTF-8''{encoded_name}"
+
+    logger.info(f"Стриминг файла '{file_name}' через сервер клиенту.")
+    return response
 
 async def _fetch_download_links(public_key: str, api_paths: List[str], session: aiohttp.ClientSession) -> Tuple[List[Dict[str, str]], List[str]]:
     link_tasks = []
