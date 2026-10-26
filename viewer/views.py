@@ -1,5 +1,5 @@
 import aiohttp, asyncio, logging, mimetypes, zipfile, os, tempfile, aiofiles
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlencode
 from pathlib import PurePath, Path
 from typing import AsyncGenerator, List, Dict, Any, Set, Tuple
 import math
@@ -16,6 +16,7 @@ from django.utils.timezone import now
 from django.conf import settings
 from django.contrib.auth import logout
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+from django.urls import reverse
 
 # Local Imports
 from .yadisk_api import (
@@ -738,11 +739,12 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
 
 def login_view(request):
     next_url = request.GET.get('next') or settings.LOGIN_REDIRECT_URL
-    return redirect('social:begin', 'yandex-oauth2', next=next_url)
+    begin_url = reverse('social:begin', kwargs={'backend': 'yandex-oauth2'})
+    return redirect(f"{begin_url}?{urlencode({'next': next_url})}")
 
 def logout_view(request):
     logout(request)
-    return redirect(settings.LOGIN_URL)
+    return redirect(settings.LOGOUT_REDIRECT_URL)
 
 
 @require_POST

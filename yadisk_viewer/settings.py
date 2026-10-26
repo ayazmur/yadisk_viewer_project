@@ -33,7 +33,8 @@ CSRF_TRUSTED_ORIGINS = [
 ]
 
 # Ключевая строка: сообщаем Django, что он работает за HTTPS-прокси
-# SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
 
 # Application definition
 
