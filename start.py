@@ -81,6 +81,7 @@ def main() -> None:
         import aiohttp  # noqa: F401
         import django  # noqa: F401
         import uvicorn  # noqa: F401
+        import social_django  # noqa: F401
         deps_ok = True
     except ImportError:
         deps_ok = False
