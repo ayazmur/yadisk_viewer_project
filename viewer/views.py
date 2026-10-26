@@ -737,7 +737,8 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
         return HttpResponseServerError("Внутренняя ошибка сервера при обработке запроса на ZIP-архив.")
 
 def login_view(request):
-    return redirect('social:begin', 'yandex-oauth2', next=request.path)
+    next_url = request.GET.get('next') or settings.LOGIN_REDIRECT_URL
+    return redirect('social:begin', 'yandex-oauth2', next=next_url)
 
 def logout_view(request):
     logout(request)
