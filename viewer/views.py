@@ -256,14 +256,14 @@ async def index(request: HttpRequest) -> HttpResponse:
     if not public_url:
         logger.info("Нет public_url. Очистка сессии.")
         await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
-        return render(request, 'viewer/index.html', context)
+        return await sync_to_async(render, thread_sensitive=True)(request, 'viewer/index.html', context)
 
     # --- Process Public URL ---
     public_key = extract_public_key(public_url)
     if not public_key:
         context['error'] = "Некорректный URL или не удалось извлечь ключ."
         await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
-        return render(request, 'viewer/index.html', context)
+        return await sync_to_async(render, thread_sensitive=True)(request, 'viewer/index.html', context)
 
     if public_key != session_public_key or public_url_from_post:
         await set_session_value(request, 'public_key', public_key)
@@ -379,7 +379,7 @@ async def index(request: HttpRequest) -> HttpResponse:
                     'needs_last_ellipses': page_num < total_pages - 3,
                 }
 
-    return render(request, 'viewer/index.html', context)
+    return await sync_to_async(render, thread_sensitive=True)(request, 'viewer/index.html', context)
 
 
 # --- Download Views ---
