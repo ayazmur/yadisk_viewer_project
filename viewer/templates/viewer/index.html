@@ -108,7 +108,7 @@
                         <li class="{% if item.type == 'dir' %}list-item-dir{% else %}list-item-file{% endif %}">
                             {% if item.type == 'dir' %}
                                 <span class="file-icon-container">
-                                    <img src="{% static 'viewer/folder.png' %}" alt="Папка" class="file-icon">
+                                    <img src="{% static 'viewer/folder.svg' %}" alt="Папка" class="file-icon">
                                 </span>
                                 <span class="file-name">
                                     {% url 'viewer:index' as base_index_url %}
@@ -131,7 +131,7 @@
                                          <img src="{{ item.preview }}" alt="{{ item.name }}" class="file-preview"
                                               data-fullsize="{{ item.file }}" loading="lazy">
                                      {% else %}
-                                         <img src="{% static 'viewer/file.png' %}" alt="Файл" class="file-icon">
+                                          <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
                                      {% endif %}
                                 </span>
                                 <span class="file-name" title="{{ item.name }}"><span>{{ item.name }}</span></span>
@@ -164,7 +164,7 @@
                            {% if data.preview %}
                                <img src="{{ data.preview }}" alt="{{ data.name }}" class="file-preview" data-fullsize="{{ data.file }}">
                            {% else %}
-                               <img src="{% static 'viewer/file.png' %}" alt="Файл" class="file-icon">
+                                <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
                            {% endif %}
                       </span>
                      <span class="file-name"><span>{{ data.name }}</span></span>
