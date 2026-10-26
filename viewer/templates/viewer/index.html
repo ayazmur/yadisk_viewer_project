@@ -10,7 +10,7 @@
     <form method="post" class="url-input-form" action="{% url 'viewer:index' %}">
         {% csrf_token %}
         <input type="text" name="public_url" placeholder="Вставьте публичную ссылку Яндекс.Диска..."
-               value="{{ public_url|default:'' }}" required
+               value="{{ public_url|default:'' }}" required autofocus
                aria-label="Публичная ссылка Яндекс.Диска">
         <button type="submit">Обзор</button>
     </form>
@@ -26,6 +26,16 @@
         {# Breadcrumbs #}
         <nav aria-label="breadcrumb">
             <ol class="breadcrumbs">
+                {% if parent_path %}
+                    <li class="breadcrumb-item up-folder">
+                        {% url 'viewer:index' as base_index_url %}
+                        {% with request_params=request.GET.copy %}
+                            {% dict_del request_params "page" as params_parent %}
+                            {% dict_set params_parent "path" parent_path as params_parent %}
+                            <a href="{{ base_index_url }}?{{ params_parent.urlencode }}" title="К родительской папке">↑</a>
+                        {% endwith %}
+                    </li>
+                {% endif %}
                 {% for crumb in breadcrumbs %}
                     <li class="breadcrumb-item {% if forloop.last %}active{% endif %}">
                         {% if not forloop.last %}
@@ -67,6 +77,33 @@
                     {% endwith %}
                 </div>
             {% endif %}
+
+            {# Sort Controls #}
+            <div class="sort-controls">
+                Сортировка:
+                {% url 'viewer:index' as base_index_url %}
+                {% with request_params=request.GET.copy %}
+                    {% dict_set request_params 'sort' 'name' as params_sort_name_asc %}
+                    <a href="{{ base_index_url }}?{{ params_sort_name_asc.urlencode }}"
+                       class="{% if sort_by == 'name' and sort_order == 'asc' %}active{% endif %}">Имя ↑</a>
+                    {% dict_set request_params 'sort' 'name' as params_sort_name_tmp %}
+                    {% dict_set params_sort_name_tmp 'order' 'desc' as params_sort_name_desc %}
+                    <a href="{{ base_index_url }}?{{ params_sort_name_desc.urlencode }}"
+                       class="{% if sort_by == 'name' and sort_order == 'desc' %}active{% endif %}">Имя ↓</a>
+                    {% dict_set request_params 'sort' 'size' as params_sort_size_asc %}
+                    <a href="{{ base_index_url }}?{{ params_sort_size_asc.urlencode }}"
+                       class="{% if sort_by == 'size' and sort_order == 'asc' %}active{% endif %}">Размер ↑</a>
+                    {% dict_set request_params 'sort' 'size' as params_sort_size_tmp %}
+                    {% dict_set params_sort_size_tmp 'order' 'desc' as params_sort_size_desc %}
+                    <a href="{{ base_index_url }}?{{ params_sort_size_desc.urlencode }}"
+                       class="{% if sort_by == 'size' and sort_order == 'desc' %}active{% endif %}">Размер ↓</a>
+                {% endwith %}
+            </div>
+
+            {# Items Summary #}
+            <div class="items-summary">
+                Всего: {{ total_items }} (папок: {{ dir_count }}, файлов: {{ file_count }})
+            </div>
 
             {# Page Size Controls #}
             {% if pagination %}

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Просмотр Яндекс.Диска{% endblock %}</title>
     {% load static %}
-    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=1.1"> 
+    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=1.2"> 
     {% block head_extra %}{% endblock %}
 </head>
 <body>
@@ -21,6 +21,12 @@
     <footer>
         <p>Приложение для просмотра публичных ссылок Яндекс.Диска.</p>
     </footer>
+
+    {# ZIP Loading Overlay #}
+    <div id="zipLoadingOverlay" class="loading-overlay" role="status" aria-live="polite">
+        <div class="spinner" aria-hidden="true"></div>
+        <p>Создаём архив, это может занять некоторое время...</p>
+    </div>
 
     {# Image Preview Modal Structure #}
     <div id="imagePreviewModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCaption">
@@ -70,11 +76,13 @@
             if (closeModalButton) {
                 closeModalButton.onclick = closeModal;
             }
-            modal.addEventListener('click', function(event) {
-                if (event.target === modal) {
-                    closeModal();
-                }
-            });
+            if (modal) {
+                modal.addEventListener('click', function(event) {
+                    if (event.target === modal) {
+                        closeModal();
+                    }
+                });
+            }
             document.addEventListener('keydown', function(event) {
                 if (event.key === "Escape" && modal && modal.style.display === "flex") {
                     closeModal();
@@ -129,16 +137,25 @@
                 }
             }
 
-             const zipForm = document.getElementById('zip-form');
-             if (zipForm) {
-                const zipSubmitButton = zipForm.querySelector('button[type="submit"]');
-                 if (zipSubmitButton) {
-                     zipForm.addEventListener('submit', function() {
-                         zipSubmitButton.disabled = true;
-                         zipSubmitButton.textContent = 'Архивация. Это может занять некоторое время...';
-                     });
-                 }
-             }
+              const zipForm = document.getElementById('zip-form');
+              if (zipForm) {
+                  zipForm.addEventListener('submit', function() {
+                      const overlay = document.getElementById('zipLoadingOverlay');
+                      if (overlay) {
+                          overlay.classList.add('active');
+                      }
+                  });
+              }
+
+            // --- Auto-paste yadisk link from clipboard on load ---
+            const urlInput = document.querySelector('form.url-input-form input[name="public_url"]');
+            if (urlInput && !urlInput.value && navigator.clipboard && navigator.clipboard.readText) {
+                navigator.clipboard.readText().then(text => {
+                    if (text && !urlInput.value && /disk\.yandex\.(ru|com)|yadi\.sk/i.test(text)) {
+                        urlInput.value = text.trim();
+                    }
+                }).catch(() => {});
+            }
 
         });
     </script>

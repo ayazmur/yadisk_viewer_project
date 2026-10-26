@@ -170,6 +170,15 @@ form.url-input-form {
     color: var(--text-color);
 }
 
+.breadcrumb-item.up-folder a {
+    font-weight: 600;
+}
+
+.items-summary {
+    font-size: 0.85em;
+    color: var(--text-muted-color);
+}
+
 /* Filter & Page Size Controls */
 .controls-container {
     display: flex;
@@ -184,7 +193,8 @@ form.url-input-form {
 }
 
 .filter-buttons,
-.page-size-controls {
+.page-size-controls,
+.sort-controls {
     font-size: 0.9em;
     color: var(--text-muted-color);
     display: flex; 
@@ -194,6 +204,7 @@ form.url-input-form {
 
 .filter-buttons a,
 .page-size-controls a,
+.sort-controls a,
 .filter-buttons strong,
 .page-size-controls strong {
     padding: 5px 10px;
@@ -205,7 +216,8 @@ form.url-input-form {
 }
 
 .filter-buttons a,
-.page-size-controls a {
+.page-size-controls a,
+.sort-controls a {
     border-color: var(--border-color);
     background-color: #fff;
     color: var(--primary-color);
@@ -213,13 +225,15 @@ form.url-input-form {
 }
 
 .filter-buttons a:hover,
-.page-size-controls a:hover {
+.page-size-controls a:hover,
+.sort-controls a:hover {
     background-color: var(--light-bg-color);
     text-decoration: none;
     border-color: #adb5bd;
 }
 
-.filter-buttons a.active, 
+.filter-buttons a.active,
+.sort-controls a.active,
 .page-size-controls strong { 
     background-color: var(--primary-color);
     color: white;
@@ -572,7 +586,7 @@ nav[aria-label="Навигация по страницам"] {
         align-items: stretch; 
         gap: 15px;
     }
-    .filter-buttons, .page-size-controls {
+    .filter-buttons, .page-size-controls, .sort-controls {
         justify-content: center; 
         flex-wrap: wrap;
     }
@@ -650,7 +664,7 @@ nav[aria-label="Навигация по страницам"] {
          font-size: 0.9em; 
     }
 
-    .filter-buttons a, .page-size-controls a, .filter-buttons strong, .page-size-controls strong {
+    .filter-buttons a, .page-size-controls a, .sort-controls a, .filter-buttons strong, .page-size-controls strong {
          padding: 4px 8px;
          font-size: 0.85em;
     }
@@ -668,4 +682,106 @@ nav[aria-label="Навигация по страницам"] {
          width: 100%;
          padding: 10px 15px;
      }
+}
+
+/* ZIP Loading Overlay */
+.loading-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    background-color: rgba(255, 255, 255, 0.92);
+    color: var(--text-color);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 18px;
+    text-align: center;
+    padding: 20px;
+    font-size: 1.05rem;
+}
+
+.loading-overlay.active {
+    display: flex;
+}
+
+.loading-overlay .spinner {
+    width: 52px;
+    height: 52px;
+    border: 5px solid var(--border-color);
+    border-top-color: var(--primary-color);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Dark Theme */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --border-color: #2f3540;
+        --light-bg-color: #232936;
+        --text-color: #e4e8ee;
+        --text-muted-color: #98a2b0;
+        --error-color: #f16d80;
+        --error-bg-color: #341f25;
+        --error-border-color: #53303a;
+        --primary-disabled-color: #3a4150;
+    }
+
+    body {
+        background-color: #14171d;
+    }
+
+    header.main-header,
+    main,
+    footer {
+        background-color: #1b202a;
+    }
+
+    h1 {
+        color: #e4e8ee;
+    }
+
+    .file-list li {
+        border-bottom-color: #262d3a;
+    }
+
+    .file-preview {
+        background-color: #1b202a;
+        border-color: #3a4252;
+    }
+
+    .file-actions a,
+    .filter-buttons a,
+    .page-size-controls a,
+    .sort-controls a,
+    .pagination .page-link {
+        background-color: #1b202a;
+    }
+
+    .file-list li:hover,
+    .select-all-container,
+    .filter-buttons a:hover,
+    .page-size-controls a:hover,
+    .sort-controls a:hover,
+    .file-actions a:hover,
+    .pagination a.page-link:hover {
+        background-color: #232936;
+    }
+
+    .file-list li.no-files-message:hover {
+        background-color: transparent;
+    }
+
+    .pagination span.page-link.disabled,
+    .pagination span.page-link.ellipses {
+        background-color: #232936;
+    }
+
+    .loading-overlay {
+        background-color: rgba(16, 19, 25, 0.92);
+    }
 }

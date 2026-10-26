@@ -165,6 +165,12 @@ async def index(request: HttpRequest) -> HttpResponse:
         'pagination': None,
         'current_page_size': DEFAULT_PAGE_SIZE,
         'allowed_page_sizes': ALLOWED_PAGE_SIZES,
+        'sort_by': 'name',
+        'sort_order': 'asc',
+        'parent_path': None,
+        'total_items': 0,
+        'dir_count': 0,
+        'file_count': 0,
     }
 
     # Get parameters from GET request
@@ -181,6 +187,15 @@ async def index(request: HttpRequest) -> HttpResponse:
         page_size = page_size if page_size in ALLOWED_PAGE_SIZES else DEFAULT_PAGE_SIZE
     except ValueError:
         page_size = DEFAULT_PAGE_SIZE
+
+    sort_by = request.GET.get('sort', 'name')
+    if sort_by not in ('name', 'size'):
+        sort_by = 'name'
+    sort_order = request.GET.get('order', 'asc')
+    if sort_order not in ('asc', 'desc'):
+        sort_order = 'asc'
+    context['sort_by'] = sort_by
+    context['sort_order'] = sort_order
 
     public_url_from_post = request.POST.get('public_url', '').strip() if request.method == 'POST' else ''
     session_public_key = await get_session_value(request, 'public_key')
@@ -219,6 +234,10 @@ async def index(request: HttpRequest) -> HttpResponse:
     offset = (page_num - 1) * page_size
     context['current_path'] = normalized_path_param
     context['breadcrumbs'] = generate_breadcrumbs(normalized_path_param)
+
+    if normalized_path_param != '/':
+        path_parts = [part for part in normalized_path_param.split('/') if part]
+        context['parent_path'] = '/' + '/'.join(path_parts[:-1]) if len(path_parts) > 1 else '/'
 
     logger.info(f"Запрос данных: key='{public_key}', path='{api_path}', limit={page_size}, offset={offset}")
 
@@ -280,6 +299,23 @@ async def index(request: HttpRequest) -> HttpResponse:
             context['available_file_types'] = set()
             total_items = 0
 
+        context['total_items'] = total_items
+
+        if resource_type == 'dir':
+            current_items = context.get('items') or []
+            context['dir_count'] = sum(1 for item in current_items if item.get('type') == 'dir')
+            context['file_count'] = sum(1 for item in current_items if item.get('type') == 'file')
+
+            if sort_by != 'name' or sort_order != 'asc':
+                dirs = [item for item in current_items if item.get('type') == 'dir']
+                files = [item for item in current_items if item.get('type') == 'file']
+                dirs.sort(key=lambda item: (item.get('name', '') or '').lower())
+                files.sort(
+                    key=lambda item: item.get('size', 0) if sort_by == 'size' else (item.get('name', '') or '').lower(),
+                    reverse=(sort_order == 'desc')
+                )
+                context['items'] = dirs + files
+
         # --- Setup Pagination ---
         if resource_type == 'dir' and total_items > page_size:
             total_pages = math.ceil(total_items / page_size)
@@ -335,7 +371,7 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
     # 2. Асинхронный генератор с автоматическим повтором при разрыве ДО первого чанка
     async def stream_from_yadisk():
         timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=3600)
-        headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/anpain/yadisk_viewer_project)'}
+            headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)'}
 
         sent_any = False  # отправили ли уже хоть один чанк браузеру
 
@@ -415,7 +451,7 @@ async def _download_file_to_temp(file_info: Dict[str, str], temp_dir: str, sessi
 
         try:
             timeout = aiohttp.ClientTimeout(total=600, connect=30, sock_read=600)
-            headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/anpain/yadisk_viewer_project)'}
+        headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)'}
 
             async with session.get(url, timeout=timeout, headers=headers, allow_redirects=True) as resp:
                 resp.raise_for_status() 
