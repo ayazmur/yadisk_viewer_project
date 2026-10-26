@@ -30,6 +30,10 @@ ALLOWED_HOSTS = ['*']
 
 CSRF_TRUSTED_ORIGINS = [
     'https://*.app.github.dev',  # Доверять всем адресам Codespaces
+    'https://localhost:8000',
+    'http://localhost:8000',
+    'https://127.0.0.1:8000',
+    'http://127.0.0.1:8000',
 ]
 
 # Ключевая строка: сообщаем Django, что он работает за HTTPS-прокси
