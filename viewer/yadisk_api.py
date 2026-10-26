@@ -222,6 +222,7 @@ async def _scan_directory(
 # --- Own Disk (OAuth) API ---
 DISK_RESOURCES_API_URL = "https://cloud-api.yandex.net/v1/disk/resources"
 DISK_DOWNLOAD_API_URL = "https://cloud-api.yandex.net/v1/disk/resources/download"
+DISK_UPLOAD_API_URL = "https://cloud-api.yandex.net/v1/disk/resources/upload"
 
 
 def _disk_headers(token: str) -> dict[str, str]:

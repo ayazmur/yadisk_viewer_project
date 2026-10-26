@@ -1,4 +1,5 @@
 import aiohttp, asyncio, logging, mimetypes, zipfile, os, tempfile, aiofiles
+import requests
 from urllib.parse import quote, unquote, urlencode
 from pathlib import PurePath, Path
 from typing import AsyncGenerator, List, Dict, Any, Set, Tuple
@@ -23,7 +24,7 @@ from .yadisk_api import (
     get_public_resource_meta, get_public_resource_download_link,
     extract_public_key, get_all_public_files,
     get_disk_resource_meta, get_disk_download_link, get_all_disk_files,
-    normalize_disk_path,
+    normalize_disk_path, DISK_UPLOAD_API_URL,
 )
 
 # Async Helpers
@@ -289,6 +290,7 @@ async def index(request: HttpRequest) -> HttpResponse:
     context['public_url'] = public_url or ''
     context['current_page_size'] = page_size
     context['filter_type'] = filter_from_get
+    context['upload_status'] = request.GET.get('upload')
 
     if force_disk:
         await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
@@ -824,6 +826,69 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
                  logger.error(f"Ошибка при удалении временного ZIP файла во время обработки ошибки: {remove_err}")
 
         return HttpResponseServerError("Внутренняя ошибка сервера при обработке запроса на ZIP-архив.")
+
+@require_POST
+def upload_file(request: HttpRequest) -> HttpResponse:
+    """Загружает файл на собственный диск пользователя (требует cloud_api:disk.write)."""
+    index_url = reverse('viewer:index')
+    view_mode = request.session.get('view_mode', 'public')
+    if view_mode != 'disk':
+        return redirect(index_url)
+
+    token = _get_yandex_token_sync(request)
+    if not token:
+        return redirect(f"{index_url}?source=disk&upload=nologin")
+
+    uploaded = request.FILES.get('file')
+    if not uploaded:
+        return redirect(f"{index_url}?source=disk&upload=empty")
+
+    current_path = request.POST.get('path') or request.session.get('current_path', '/')
+    folder_path = normalize_disk_path(current_path)
+    file_name = PurePath(uploaded.name.replace('\\', '/')).name
+    target_path = folder_path.rstrip('/') + '/' + file_name
+
+    back_url = f"{index_url}?source=disk&path={quote(folder_path, safe='')}"
+    logger.info(f"Загрузка файла '{target_path}' на свой диск ({uploaded.size} байт).")
+
+    try:
+        link_resp = requests.get(
+            DISK_UPLOAD_API_URL,
+            params={'path': target_path, 'overwrite': 'true'},
+            headers={'Authorization': f'OAuth {token}'},
+            timeout=30,
+        )
+        if link_resp.status_code in (401, 403):
+            logger.warning(f"Нет права записи на Диск: {link_resp.status_code} {link_resp.text[:200]}")
+            return redirect(f"{back_url}&upload=noperm")
+        if link_resp.status_code != 200:
+            logger.error(f"Не удалось получить ссылку на загрузку: {link_resp.status_code} {link_resp.text[:200]}")
+            return redirect(f"{back_url}&upload=error")
+
+        href = (link_resp.json() or {}).get('href')
+        if not href:
+            logger.error("В ответе API нет href для загрузки.")
+            return redirect(f"{back_url}&upload=error")
+
+        with uploaded.open('rb') as file_obj:
+            put_resp = requests.put(
+                href,
+                data=file_obj,
+                headers={'Content-Type': 'application/octet-stream'},
+                timeout=(30, 7200),
+            )
+
+        if put_resp.status_code not in (200, 201, 202, 204):
+            logger.error(f"Ошибка загрузки файла: {put_resp.status_code} {put_resp.text[:200]}")
+            return redirect(f"{back_url}&upload=error")
+
+        logger.info(f"Файл '{target_path}' успешно загружен.")
+    except requests.RequestException as e:
+        logger.exception(f"Сетевая ошибка при загрузке файла '{target_path}': {e}")
+        return redirect(f"{back_url}&upload=error")
+
+    return redirect(f"{back_url}&upload=ok")
+
 
 def login_view(request):
     next_url = request.GET.get('next') or settings.LOGIN_REDIRECT_URL
