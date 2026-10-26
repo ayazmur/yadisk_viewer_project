@@ -7,7 +7,7 @@ import math
 # Django Imports
 from django.shortcuts import render, redirect
 from django.http import (
-    HttpRequest, HttpResponse, StreamingHttpResponse,
+    HttpRequest, HttpResponse, StreamingHttpResponse, FileResponse,
     Http404, HttpResponseRedirect, HttpResponseServerError
 )
 from django.views.decorators.http import require_GET, require_POST
@@ -690,8 +690,8 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
              logger.error(f"Создание ZIP архива '{zip_temp_filepath}' не удалось.")
              return HttpResponseServerError("Ошибка при создании ZIP-архива на сервере.")
 
-        response = StreamingHttpResponse(
-            _zip_file_stream_generator(zip_temp_filepath, zip_filename),
+        response = FileResponse(
+            open(zip_temp_filepath, 'rb'),
             content_type='application/zip'
         )
 
@@ -702,7 +702,17 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
             encoded_name = quote(zip_filename)
             response['Content-Disposition'] = f"attachment; filename*=UTF-8''{encoded_name}"
 
-        logger.info(f"Отправка StreamingHttpResponse для ZIP: {zip_filename}")
+        async def _cleanup_zip_file():
+            await asyncio.sleep(2)
+            try:
+                if os.path.exists(zip_temp_filepath):
+                    os.remove(zip_temp_filepath)
+                    logger.info(f"Временный ZIP файл '{zip_temp_filepath}' удалён.")
+            except Exception as e:
+                logger.warning(f"Ошибка удаления временного ZIP '{zip_temp_filepath}': {e}")
+
+        asyncio.create_task(_cleanup_zip_file())
+        logger.info(f"Отправка ZIP-архива: {zip_filename}")
         return response
 
     except Exception as e:
@@ -823,8 +833,8 @@ async def download_all_zip(request: HttpRequest) -> HttpResponse:
         if not zip_success:
             return HttpResponseServerError("Ошибка при создании ZIP-архива на сервере.")
 
-        response = StreamingHttpResponse(
-            _zip_file_stream_generator(zip_temp_filepath, zip_filename),
+        response = FileResponse(
+            open(zip_temp_filepath, 'rb'),
             content_type='application/zip'
         )
         try:
@@ -834,6 +844,16 @@ async def download_all_zip(request: HttpRequest) -> HttpResponse:
             encoded_name = quote(zip_filename)
             response['Content-Disposition'] = f"attachment; filename*=UTF-8''{encoded_name}"
 
+        async def _cleanup_all_zip_file():
+            await asyncio.sleep(2)
+            try:
+                if os.path.exists(zip_temp_filepath):
+                    os.remove(zip_temp_filepath)
+                    logger.info(f"Временный ZIP файл '{zip_temp_filepath}' удалён.")
+            except Exception as e:
+                logger.warning(f"Ошибка удаления временного ZIP '{zip_temp_filepath}': {e}")
+
+        asyncio.create_task(_cleanup_all_zip_file())
         logger.info(f"Отправка полного ZIP-архива: {zip_filename}")
         return response
 
