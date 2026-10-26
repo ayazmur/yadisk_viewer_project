@@ -9,9 +9,17 @@
     {% block head_extra %}{% endblock %}
 </head>
 <body>
-    <header class="main-header">
-        <h1>Просмотр публичных ссылок Яндекс.Диска</h1>
-    </header>
+<header class="main-header">
+    <h1>Просмотр публичных ссылок Яндекс.Диска</h1>
+    {% if user.is_authenticated %}
+        <div class="user-info">
+            <span>Привет, {{ user.get_full_name|default:user.username }}</span>
+            <a href="{% url 'viewer:logout' %}" class="btn btn-small">Выйти</a>
+        </div>
+    {% else %}
+        <a href="{% url 'viewer:login' %}" class="btn btn-small">Войти через Яндекс</a>
+    {% endif %}
+</header>
 
     <main>
         {% block content %}

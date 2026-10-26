@@ -735,6 +735,18 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
 
         return HttpResponseServerError("Внутренняя ошибка сервера при обработке запроса на ZIP-архив.")
 
+def login_view(request):
+    from django.shortcuts import redirect
+    from social_django.utils import psa
+    from social_core.actions import do_login
+    return redirect('social:begin', 'yandex-oauth2', next=request.path)
+
+def logout_view(request):
+    from django.contrib.auth import logout
+    from django.shortcuts import redirect
+    logout(request)
+    return redirect(settings.LOGIN_URL)
+
 
 @require_POST
 async def download_all_zip(request: HttpRequest) -> HttpResponse:
