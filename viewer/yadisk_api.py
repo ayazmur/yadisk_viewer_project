@@ -217,3 +217,154 @@ async def _scan_directory(
         offset += len(items)
         if len(items) < limit:
             break
+
+
+# --- Own Disk (OAuth) API ---
+DISK_RESOURCES_API_URL = "https://cloud-api.yandex.net/v1/disk/resources"
+DISK_DOWNLOAD_API_URL = "https://cloud-api.yandex.net/v1/disk/resources/download"
+
+
+def _disk_headers(token: str) -> dict[str, str]:
+    return {'Authorization': f'OAuth {token}'}
+
+
+def normalize_disk_path(path: str | None) -> str:
+    """Приводит путь к виду '/folder/file' (корень = '/')."""
+    if not path:
+        return '/'
+    p = path.replace('\\', '/')
+    if p.startswith('disk:'):
+        p = p[5:]
+    p = '/' + p.lstrip('/')
+    return p if p else '/'
+
+
+async def get_disk_resource_meta(
+    token: str,
+    path: str = '/',
+    limit: int = 50,
+    offset: int = 0,
+    session: aiohttp.ClientSession | None = None
+) -> dict | None:
+    """Метаданные ресурса собственного диска пользователя (OAuth-токен)."""
+    params = {
+        'path': normalize_disk_path(path),
+        'limit': limit,
+        'offset': offset,
+        'sort': 'type,name',
+    }
+
+    close_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close_session = True
+
+    try:
+        async with session.get(DISK_RESOURCES_API_URL, params=params, headers=_disk_headers(token)) as response:
+            if response.status == 200:
+                return await response.json()
+            if response.status == 404:
+                return {'error': 'not_found', 'message': 'Resource not found'}
+            if response.status in (401, 403):
+                return {'error': 'unauthorized', 'status': response.status, 'message': await response.text()}
+            error_text = await response.text()
+            logger.error(f"Ошибка API Яндекс.Диска ({response.status}) для path={params['path']}: {error_text}")
+            return {'error': 'api_error', 'status': response.status, 'message': error_text}
+    except aiohttp.ClientError as e:
+        logger.error(f"Сетевая ошибка при запросе ресурса диска (path={params['path']}): {e}")
+        return None
+    except asyncio.TimeoutError:
+        logger.error(f"Тайм-аут при запросе ресурса диска (path={params['path']})")
+        return None
+    except Exception as e:
+        logger.exception(f"Непредвиденная ошибка при запросе ресурса диска (path={params['path']}): {e}")
+        return None
+    finally:
+        if close_session and session:
+            await session.close()
+
+
+async def get_disk_download_link(
+    token: str,
+    path: str,
+    session: aiohttp.ClientSession | None = None
+) -> str | None:
+    """Ссылка на скачивание файла с собственного диска пользователя."""
+    params = {'path': normalize_disk_path(path)}
+
+    close_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close_session = True
+
+    try:
+        async with session.get(DISK_DOWNLOAD_API_URL, params=params, headers=_disk_headers(token)) as response:
+            if response.status == 200:
+                data = await response.json()
+                return data.get('href')
+            error_text = await response.text()
+            logger.warning(f"Не удалось получить ссылку (path={params['path']}, status={response.status}): {error_text}")
+            return None
+    except Exception as e:
+        logger.error(f"Ошибка получения ссылки на скачивание (path={params['path']}): {e}")
+        return None
+    finally:
+        if close_session and session:
+            await session.close()
+
+
+async def get_all_disk_files(
+    token: str,
+    base_path: str = '/',
+    session: aiohttp.ClientSession | None = None
+) -> list[dict[str, str]]:
+    """Рекурсивно собирает все файлы собственного диска пользователя."""
+    all_files: list[dict[str, str]] = []
+    close_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close_session = True
+
+    try:
+        await _scan_disk_directory(token, normalize_disk_path(base_path), session, all_files)
+    except Exception as e:
+        logger.error(f"Ошибка рекурсивного обхода диска (path={base_path}): {e}")
+    finally:
+        if close_session and session:
+            await session.close()
+
+    logger.info(f"Рекурсивный обход своего диска завершён: найдено {len(all_files)} файлов.")
+    return all_files
+
+
+async def _scan_disk_directory(
+    token: str,
+    path: str,
+    session: aiohttp.ClientSession,
+    all_files: list[dict[str, str]]
+) -> None:
+    offset = 0
+    limit = 50
+
+    while True:
+        data = await get_disk_resource_meta(token, path=path, limit=limit, offset=offset, session=session)
+        if not data or 'error' in data:
+            break
+
+        embedded = data.get('_embedded') or data.get('embedded') or {}
+        items = embedded.get('items', []) or []
+
+        for file_item in (i for i in items if i.get('type') == 'file'):
+            file_path = file_item.get('path', '')
+            download_url = await get_disk_download_link(token, file_path, session=session)
+            if download_url:
+                all_files.append({'api_path': file_path, 'url': download_url})
+            else:
+                logger.warning(f"Не удалось получить ссылку для файла: {file_path}")
+
+        for dir_item in (i for i in items if i.get('type') == 'dir'):
+            await _scan_disk_directory(token, dir_item.get('path', '/'), session, all_files)
+
+        offset += len(items)
+        if len(items) < limit:
+            break

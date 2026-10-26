@@ -21,7 +21,9 @@ from django.urls import reverse
 # Local Imports
 from .yadisk_api import (
     get_public_resource_meta, get_public_resource_download_link,
-    extract_public_key, get_all_public_files
+    extract_public_key, get_all_public_files,
+    get_disk_resource_meta, get_disk_download_link, get_all_disk_files,
+    normalize_disk_path,
 )
 
 # Async Helpers
@@ -137,7 +139,7 @@ def generate_breadcrumbs(path_str: str) -> List[Dict[str, str]]:
         breadcrumbs.append({'name': part, 'path': current_crumb_path})
     return breadcrumbs
 
-def process_api_items(items_list_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Set[str]]:
+def process_api_items(items_list_raw: List[Dict[str, Any]], relative_to_disk_root: bool = False) -> Tuple[List[Dict[str, Any]], Set[str]]:
     processed_items = []
     available_types = set()
     for item in items_list_raw:
@@ -150,8 +152,11 @@ def process_api_items(items_list_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[s
             api_path_str = item_copy.get('path', '')
 
             if api_path_str.startswith('disk:'):
-                 public_root_prefix_len = api_path_str.find('/', 6) + 1
-                 relative_path = api_path_str[public_root_prefix_len:] if public_root_prefix_len > 0 else ''
+                if relative_to_disk_root:
+                    relative_path = api_path_str[5:].lstrip('/')
+                else:
+                    public_root_prefix_len = api_path_str.find('/', 6) + 1
+                    relative_path = api_path_str[public_root_prefix_len:] if public_root_prefix_len > 0 else ''
             else:
                  relative_path = api_path_str
 
@@ -162,9 +167,13 @@ def process_api_items(items_list_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[s
         elif item_type == 'dir':
             dir_path = item_copy.get('path', '/')
             if dir_path.startswith('disk:'):
-                 public_root_prefix_len = dir_path.find('/', 6) + 1
-                 relative_path = dir_path[public_root_prefix_len:] if public_root_prefix_len > 0 else ''
-                 item_copy['path_param'] = f"/{relative_path}".replace('//','/')
+                if relative_to_disk_root:
+                    relative_path = dir_path[5:].lstrip('/')
+                    item_copy['path_param'] = f"/{relative_path}".replace('//', '/')
+                else:
+                    public_root_prefix_len = dir_path.find('/', 6) + 1
+                    relative_path = dir_path[public_root_prefix_len:] if public_root_prefix_len > 0 else ''
+                    item_copy['path_param'] = f"/{relative_path}".replace('//','/')
             else:
                 item_copy['path_param'] = f"/{dir_path.lstrip('/')}".replace('//','/')
 
@@ -194,6 +203,24 @@ async def clear_session_keys(request: HttpRequest, keys: List[str]):
             changed = True
     if changed:
         await sync_to_async(request.session.save)()
+
+
+def _get_yandex_token_sync(request: HttpRequest) -> str | None:
+    try:
+        user = request.user
+        if not user.is_authenticated:
+            return None
+        social = user.social_auth.filter(provider='yandex-oauth2').first()
+        if not social:
+            return None
+        return (social.extra_data or {}).get('access_token')
+    except Exception as e:
+        logger.warning(f"Не удалось получить OAuth-токен Яндекса: {e}")
+        return None
+
+
+async def get_yandex_token(request: HttpRequest) -> str | None:
+    return await sync_to_async(_get_yandex_token_sync)(request)
 
 
 # --- Main View ---
@@ -247,25 +274,38 @@ async def index(request: HttpRequest) -> HttpResponse:
 
     public_url_from_post = request.POST.get('public_url', '').strip() if request.method == 'POST' else ''
     session_public_key = await get_session_value(request, 'public_key')
+    force_disk = request.GET.get('source') == 'disk'
 
-    public_url = public_url_from_post or public_url_from_query or session_public_key
-    context['public_url'] = public_url
+    token = await get_yandex_token(request)
+
+    public_url = public_url_from_post or public_url_from_query
+    if not public_url and not force_disk:
+        public_url = session_public_key
+
+    disk_mode = bool(token) and not public_url
+    context['disk_mode'] = disk_mode
+    context['has_disk_access'] = bool(token)
+
+    context['public_url'] = public_url or ''
     context['current_page_size'] = page_size
     context['filter_type'] = filter_from_get
 
-    if not public_url:
-        logger.info("Нет public_url. Очистка сессии.")
+    if force_disk:
+        await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
+
+    if not public_url and not disk_mode:
+        logger.info("Нет public_url и нет авторизации. Очистка сессии.")
         await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
         return await sync_to_async(render, thread_sensitive=True)(request, 'viewer/index.html', context)
 
     # --- Process Public URL ---
-    public_key = extract_public_key(public_url)
-    if not public_key:
+    public_key = extract_public_key(public_url) if public_url else None
+    if public_url and not public_key:
         context['error'] = "Некорректный URL или не удалось извлечь ключ."
         await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
         return await sync_to_async(render, thread_sensitive=True)(request, 'viewer/index.html', context)
 
-    if public_key != session_public_key or public_url_from_post:
+    if public_key and (public_key != session_public_key or public_url_from_post):
         await set_session_value(request, 'public_key', public_key)
         await clear_session_keys(request, ['resource_type', 'resource_name'])
         logger.info(f"Установлен/Обновлен public_key в сессии: {public_key}")
@@ -274,6 +314,8 @@ async def index(request: HttpRequest) -> HttpResponse:
              query_params['public_url'] = public_key
              query_params['path'] = '/'
              return redirect(f"{request.path}?{query_params.urlencode()}")
+
+    await set_session_value(request, 'view_mode', 'disk' if disk_mode else 'public')
 
 
     # --- Fetch and Process Data ---
@@ -287,21 +329,31 @@ async def index(request: HttpRequest) -> HttpResponse:
         path_parts = [part for part in normalized_path_param.split('/') if part]
         context['parent_path'] = '/' + '/'.join(path_parts[:-1]) if len(path_parts) > 1 else '/'
 
-    logger.info(f"Запрос данных: key='{public_key}', path='{api_path}', limit={page_size}, offset={offset}")
+    logger.info(f"Запрос данных: mode={'disk' if disk_mode else 'public'}, key='{public_key}', path='{normalized_path_param}', limit={page_size}, offset={offset}")
+
+    await set_session_value(request, 'current_path', normalized_path_param)
 
     async with aiohttp.ClientSession() as session:
-        meta_data = await get_public_resource_meta(
-            public_key, path=api_path, limit=page_size, offset=offset, session=session
-        )
+        if disk_mode:
+            meta_data = await get_disk_resource_meta(
+                token, path=normalized_path_param, limit=page_size, offset=offset, session=session
+            )
+        else:
+            meta_data = await get_public_resource_meta(
+                public_key, path=api_path, limit=page_size, offset=offset, session=session
+            )
 
     # --- Handle API Response ---
     if meta_data is None:
         context['error'] = "Ошибка сети при получении данных от API Яндекс.Диска."
     elif meta_data.get('error') == 'not_found':
         context['error'] = f"Ресурс не найден по пути: {normalized_path_param}"
+    elif meta_data.get('error') == 'unauthorized':
+        context['error'] = "Нет доступа к вашему диску. Войдите через Яндекс заново."
     elif 'error' in meta_data:
         context['error'] = f"Ошибка API Яндекс.Диска: {meta_data.get('message', 'Неизвестная ошибка')}"
-        await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
+        if not disk_mode:
+            await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
     else:
         # --- Process Successful Response ---
         resource_type = meta_data.get('type') 
@@ -309,16 +361,21 @@ async def index(request: HttpRequest) -> HttpResponse:
 
         session_resource_type = await get_session_value(request, 'resource_type')
         if not session_resource_type:
-             async with aiohttp.ClientSession() as session:
-                 root_meta = await get_public_resource_meta(public_key, path=None, limit=1, offset=0, session=session)
-                 if root_meta and 'error' not in root_meta:
-                     base_type = root_meta.get('type')
-                     base_name = root_meta.get('name', 'yadisk-archive')
-                     await set_session_value(request, 'resource_type', base_type)
-                     await set_session_value(request, 'resource_name', base_name)
-                     logger.info(f"Тип корневого ресурса ({base_type}) и имя ({base_name}) сохранены в сессии.")
-                 else:
-                      logger.warning("Не удалось получить метаданные корневого ресурса для сохранения в сессии.")
+             if disk_mode:
+                 await set_session_value(request, 'resource_type', resource_type)
+                 await set_session_value(request, 'resource_name', resource_name or 'Мой диск')
+                 logger.info(f"Режим своего диска: тип ({resource_type}) сохранён в сессии.")
+             else:
+                 async with aiohttp.ClientSession() as session:
+                     root_meta = await get_public_resource_meta(public_key, path=None, limit=1, offset=0, session=session)
+                     if root_meta and 'error' not in root_meta:
+                         base_type = root_meta.get('type')
+                         base_name = root_meta.get('name', 'yadisk-archive')
+                         await set_session_value(request, 'resource_type', base_type)
+                         await set_session_value(request, 'resource_name', base_name)
+                         logger.info(f"Тип корневого ресурса ({base_type}) и имя ({base_name}) сохранены в сессии.")
+                     else:
+                          logger.warning("Не удалось получить метаданные корневого ресурса для сохранения в сессии.")
 
 
         context['data'] = meta_data
@@ -327,7 +384,7 @@ async def index(request: HttpRequest) -> HttpResponse:
         total_items = 0
 
         if resource_type == 'file':
-            processed_single, available_types_single = process_api_items([meta_data])
+            processed_single, available_types_single = process_api_items([meta_data], relative_to_disk_root=disk_mode)
             if processed_single:
                 context['data'] = processed_single[0]
                 items_list_processed = processed_single
@@ -337,7 +394,7 @@ async def index(request: HttpRequest) -> HttpResponse:
 
         elif resource_type == 'dir' and '_embedded' in meta_data:
             raw_items = meta_data['_embedded']['items']
-            all_items_processed, available_types = process_api_items(raw_items)
+            all_items_processed, available_types = process_api_items(raw_items, relative_to_disk_root=disk_mode)
             context['available_file_types'] = available_types
             total_items = meta_data['_embedded'].get('total', len(all_items_processed))
 
@@ -390,8 +447,16 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
 
     public_key = await get_session_value(request, 'public_key')
     base_resource_type = await get_session_value(request, 'resource_type')
+    view_mode = await get_session_value(request, 'view_mode', 'public')
+    disk_mode = view_mode == 'disk'
 
-    if not public_key:
+    token = await get_yandex_token(request) if disk_mode else None
+
+    if disk_mode and not token:
+        logger.warning("Попытка скачать файл со своего диска без OAuth-токена.")
+        raise Http404("Сессия авторизации истекла. Войдите через Яндекс заново.")
+
+    if not disk_mode and not public_key:
         logger.warning("Попытка скачать файл без public_key в сессии.")
         raise Http404("Сессия истекла или не найдена. Пожалуйста, введите URL заново.")
 
@@ -402,16 +467,21 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
         logger.error(f"Ошибка декодирования/очистки file_path: '{file_path}'. Ошибка: {e}")
         raise Http404("Некорректный путь файла в URL.")
 
-    path_to_request = f"/{clean_path_str}" if base_resource_type == 'dir' and clean_path_str else None
     file_name = PurePath(clean_path_str).name or "downloaded_file"
 
     # 1. Получаем ссылку в отдельной короткоживущей сессии
     async with aiohttp.ClientSession() as session:
-        logger.debug(f"Запрос ссылки: key={public_key}, path='{path_to_request}'")
-        download_url = await get_public_resource_download_link(public_key, path=path_to_request, session=session)
+        if disk_mode:
+            path_to_request = normalize_disk_path(clean_path_str)
+            logger.debug(f"Запрос ссылки со своего диска: path='{path_to_request}'")
+            download_url = await get_disk_download_link(token, path_to_request, session=session)
+        else:
+            path_to_request = f"/{clean_path_str}" if base_resource_type == 'dir' and clean_path_str else None
+            logger.debug(f"Запрос ссылки: key={public_key}, path='{path_to_request}'")
+            download_url = await get_public_resource_download_link(public_key, path=path_to_request, session=session)
 
     if not download_url:
-        logger.error(f"Не удалось получить ссылку: key={public_key}, path='{path_to_request}'.")
+        logger.error(f"Не удалось получить ссылку для '{clean_path_str}' (mode={'disk' if disk_mode else 'public'}).")
         raise Http404(f"Не удалось получить ссылку для скачивания файла '{file_name}'.")
 
     logger.info(f"Получена ссылка для '{file_name}', начинаю стриминг через сервер.")
@@ -466,13 +536,18 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
     logger.info(f"Стриминг файла '{file_name}' через сервер клиенту.")
     return response
 
-async def _fetch_download_links(public_key: str, api_paths: List[str], session: aiohttp.ClientSession) -> Tuple[List[Dict[str, str]], List[str]]:
+async def _fetch_download_links(public_key: str, api_paths: List[str], session: aiohttp.ClientSession, token: str | None = None) -> Tuple[List[Dict[str, str]], List[str]]:
     link_tasks = []
     for api_path in api_paths:
-        path_param = api_path if api_path != '/' else None
-        link_tasks.append(
-            get_public_resource_download_link(public_key, path=path_param, session=session)
-        )
+        if token:
+            link_tasks.append(
+                get_disk_download_link(token, normalize_disk_path(api_path), session=session)
+            )
+        else:
+            path_param = api_path if api_path != '/' else None
+            link_tasks.append(
+                get_public_resource_download_link(public_key, path=path_param, session=session)
+            )
 
     logger.info(f"Запрос {len(link_tasks)} ссылок на скачивание...")
     download_links_results = await asyncio.gather(*link_tasks, return_exceptions=True)
@@ -560,7 +635,10 @@ def _create_zip_archive_sync(zip_filepath: str, files_to_archive: Dict[str, str]
     try:
         with zipfile.ZipFile(zip_filepath, 'w', compression=zipfile.ZIP_STORED) as zf:
             for api_path, temp_file_path in files_to_archive.items():
-                arcname = api_path.lstrip('/')
+                arcname = api_path
+                if arcname.startswith('disk:'):
+                    arcname = arcname[5:]
+                arcname = arcname.lstrip('/')
                 if not arcname:
                     arcname = f"file_{hash(api_path)}"
                 logger.debug(f"Добавление в ZIP: '{temp_file_path}' как '{arcname}'")
@@ -613,13 +691,21 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
     public_key = await get_session_value(request, 'public_key')
     resource_type = await get_session_value(request, 'resource_type')
     resource_name = await get_session_value(request, 'resource_name', 'yadisk-archive')
+    view_mode = await get_session_value(request, 'view_mode', 'public')
+    disk_mode = view_mode == 'disk'
 
-    if not public_key:
+    token = await get_yandex_token(request) if disk_mode else None
+
+    if disk_mode and not token:
+        logger.warning("Попытка скачать ZIP со своего диска без OAuth-токена.")
+        return redirect('viewer:index')
+
+    if not disk_mode and not public_key:
         logger.warning("Попытка скачать ZIP без public_key в сессии.")
         return redirect('viewer:index')
 
     if resource_type != 'dir':
-        logger.warning(f"Попытка скачать ZIP для ресурса не-папки: key={public_key}, type={resource_type}")
+        logger.warning(f"Попытка скачать ZIP для ресурса не-папки: mode={'disk' if disk_mode else 'public'}, type={resource_type}")
         return redirect('viewer:index')
 
     selected_paths = request.POST.getlist('selected_files')
@@ -641,7 +727,9 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
 
     try:
         async with aiohttp.ClientSession() as session:
-            files_ready_for_download, failed_links = await _fetch_download_links(public_key, selected_paths, session)
+            files_ready_for_download, failed_links = await _fetch_download_links(
+                public_key, selected_paths, session, token=token if disk_mode else None
+            )
             failed_files.extend(failed_links)
 
             if not files_ready_for_download:
@@ -753,13 +841,22 @@ async def download_all_zip(request: HttpRequest) -> HttpResponse:
     public_key = await get_session_value(request, 'public_key')
     resource_type = await get_session_value(request, 'resource_type')
     resource_name = await get_session_value(request, 'resource_name', 'yadisk-archive')
+    view_mode = await get_session_value(request, 'view_mode', 'public')
+    current_path = await get_session_value(request, 'current_path', '/')
+    disk_mode = view_mode == 'disk'
 
-    if not public_key:
+    token = await get_yandex_token(request) if disk_mode else None
+
+    if disk_mode and not token:
+        logger.warning("Попытка рекурсивного скачивания без OAuth-токена.")
+        return redirect('viewer:index')
+
+    if not disk_mode and not public_key:
         logger.warning("Попытка скачать ZIP без public_key в сессии.")
         return redirect('viewer:index')
 
     if resource_type != 'dir':
-        logger.warning(f"Попытка скачать ZIP для ресурса не-папки: key={public_key}, type={resource_type}")
+        logger.warning(f"Попытка скачать ZIP для ресурса не-папки: mode={'disk' if disk_mode else 'public'}, type={resource_type}")
         return redirect('viewer:index')
 
     safe_name = slugify(resource_name) or 'archive'
@@ -775,7 +872,10 @@ async def download_all_zip(request: HttpRequest) -> HttpResponse:
 
     try:
         async with aiohttp.ClientSession() as session:
-            all_files = await get_all_public_files(public_key, base_path='/', session=session)
+            if disk_mode:
+                all_files = await get_all_disk_files(token, base_path=current_path, session=session)
+            else:
+                all_files = await get_all_public_files(public_key, base_path='/', session=session)
             if not all_files:
                 logger.error("Рекурсивный обход не нашёл ни одного файла.")
                 temp_dir_obj.cleanup()

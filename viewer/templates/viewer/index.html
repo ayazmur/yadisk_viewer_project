@@ -15,6 +15,18 @@
         <button type="submit">Обзор</button>
     </form>
 
+    {# Mode Switcher #}
+    {% if disk_mode %}
+        <div class="mode-banner">
+            <strong>Мой Яндекс.Диск</strong>
+            <span class="mode-hint">файлы вашего диска</span>
+        </div>
+    {% elif has_disk_access %}
+        <div class="mode-banner">
+            <a href="{% url 'viewer:index' %}?source=disk">← Вернуться в мой диск</a>
+        </div>
+    {% endif %}
+
     {# Error Display #}
     {% if error %}
         <p class="error">{{ error }}</p>
