@@ -125,6 +125,20 @@
                 toggleZipButton();
             }
 
+            // --- Folder Row Click Handler ---
+            document.querySelectorAll('.list-item-dir').forEach(function(row) {
+                row.style.cursor = 'pointer';
+                row.addEventListener('click', function(event) {
+                    if (event.target.tagName === 'A' || event.target.closest('a')) {
+                        return;
+                    }
+                    const link = row.querySelector('a');
+                    if (link) {
+                        window.location.href = link.href;
+                    }
+                });
+            });
+
             // --- Form Submission UX ---
             const urlForm = document.querySelector('form.url-input-form');
             if (urlForm) {

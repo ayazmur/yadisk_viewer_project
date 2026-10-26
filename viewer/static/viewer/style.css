@@ -295,6 +295,14 @@ form.url-input-form {
     font-weight: 500;
 }
 
+.file-list .list-item-dir {
+    transition: background-color 0.15s ease;
+}
+
+.file-list .list-item-dir:hover {
+    background-color: #f0f7ff;
+}
+
 .file-select-container,
 .file-icon-container {
     flex-shrink: 0;

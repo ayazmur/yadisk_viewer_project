@@ -163,16 +163,16 @@
                                      <input type="checkbox" name="selected_files" value="{{ item.normalized_api_path }}"
                                             aria-label="Выбрать {{ item.name }}">
                                 </span>
-                                <span class="file-icon-container">
-                                     {% if item.preview %}
-                                          <img src="{{ item.preview }}" alt="{{ item.name }}" class="file-preview"
-                                               data-fullsize="{{ item.file }}" loading="lazy">
-                                     {% elif item.icon_path and item.icon_path != "file.svg" %}
-                                          <img src="{% static item.icon_path %}" alt="{{ item.name }}" class="file-icon">
-                                     {% else %}
-                                          <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
-                                     {% endif %}
-                                </span>
+                                 <span class="file-icon-container">
+                                      {% if item.preview %}
+                                           <img src="{{ item.preview }}" alt="{{ item.name }}" class="file-preview"
+                                                data-fullsize="{{ item.file }}" loading="lazy" onerror="this.onerror=null;this.src='{% static 'viewer/file.svg' %}';">
+                                      {% elif item.icon_path and item.icon_path != "file.svg" %}
+                                           <img src="{% static item.icon_path %}" alt="{{ item.name }}" class="file-icon">
+                                      {% else %}
+                                           <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
+                                      {% endif %}
+                                 </span>
                                 <span class="file-name" title="{{ item.name }}"><span>{{ item.name }}</span></span>
                                 <span class="file-size">{{ item.size|default:0|filesizeformat }}</span>
                                 <span class="file-actions">
@@ -205,13 +205,13 @@
         {% elif data.type == 'file' %}
              <ul class="file-list single-file-list">
                  <li class="list-item-file">
-                      <span class="file-icon-container">
-                           {% if data.preview %}
-                               <img src="{{ data.preview }}" alt="{{ data.name }}" class="file-preview" data-fullsize="{{ data.file }}">
-                           {% else %}
-                                <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
-                           {% endif %}
-                      </span>
+                       <span class="file-icon-container">
+                            {% if data.preview %}
+                                <img src="{{ data.preview }}" alt="{{ data.name }}" class="file-preview" data-fullsize="{{ data.file }}" onerror="this.onerror=null;this.src='{% static 'viewer/file.svg' %}';">
+                            {% else %}
+                                 <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
+                            {% endif %}
+                       </span>
                      <span class="file-name"><span>{{ data.name }}</span></span>
                      <span class="file-size">{{ data.size|default:0|filesizeformat }}</span>
                      <span class="file-actions">
