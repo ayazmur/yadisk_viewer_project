@@ -74,7 +74,7 @@ def get_extension_icon(filename: str) -> str:
         return "file.svg"
     icon_name = FILE_EXTENSION_ICONS.get(ext)
     if icon_name:
-        return f"icons/{icon_name}.svg"
+        return f"viewer/icons/{icon_name}.svg"
     return "file.svg"
 
 
