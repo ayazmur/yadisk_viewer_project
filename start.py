@@ -77,20 +77,8 @@ def main() -> None:
         print(f"[ОШИБКА] Нужен Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+, у вас {sys.version.split()[0]}.", file=sys.stderr)
         sys.exit(1)
 
-    try:
-        import aiohttp  # noqa: F401
-        import django  # noqa: F401
-        import uvicorn  # noqa: F401
-        import social_django  # noqa: F401
-        deps_ok = True
-    except ImportError:
-        deps_ok = False
-
-    if not deps_ok:
-        print("\n[1/5] Зависимости не найдены - устанавливаю из requirements.txt ...")
-        run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-    else:
-        print("\n[1/5] Зависимости уже установлены - пропускаю.")
+    print("\n[1/5] Проверяю зависимости по requirements.txt ...")
+    run([sys.executable, "-m", "pip", "install", "--disable-pip-version-check", "-r", "requirements.txt"])
 
     print("\n[2/5] Проверяю конфигурацию OAuth ...")
     prompt_oauth_credentials()
