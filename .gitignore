@@ -6,3 +6,4 @@ staticfiles/
 venv/
 .venv/
 .idea/
+.env

@@ -3,9 +3,10 @@
 
 Запускает:
   1) установку зависимостей (если их нет),
-  2) миграции Django,
-  3) collectstatic (для whitenoise),
-  4) ASGI-сервер uvicorn на 0.0.0.0:8000.
+  2) запрос ключей Yandex OAuth в консоли (нигде не сохраняются),
+  3) миграции Django,
+  4) collectstatic (для whitenoise),
+  5) ASGI-сервер uvicorn на 0.0.0.0:8000.
 
 В Codespaces порт 8000 подхватывается автоматически (см. .devcontainer).
 Использование: python start.py
@@ -13,12 +14,48 @@
 
 import subprocess
 import sys
+import os
+import getpass
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
 PORT = 8000
 HOST = "0.0.0.0"
 MIN_PYTHON = (3, 10)  # код использует синтаксис str | None
+
+
+def prompt_oauth_credentials() -> None:
+    """Запрашивает ключи Yandex OAuth в консоли. Живут только в памяти процесса."""
+    if os.environ.get('YANDEX_OAUTH2_KEY') and os.environ.get('YANDEX_OAUTH2_SECRET'):
+        print("  [OK] Yandex OAuth уже задан через переменные окружения.")
+        return
+
+    print()
+    print("  Yandex OAuth (необязательно).")
+    print("  Вставьте данные приложения с https://oauth.yandex.ru/")
+    print("  Ввод не сохраняется на диск - ключи живут только до остановки сервера.")
+    print("  Оставьте пустым и нажмите Enter, чтобы пропустить.")
+    print()
+
+    try:
+        key = input("  Client ID (Key): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        key = ""
+    if not key:
+        print("  [INFO] OAuth пропущен - вход через Яндекс недоступен.")
+        return
+
+    try:
+        secret = getpass.getpass("  Client Secret (ввод скрыт): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        secret = ""
+    if not secret:
+        print("  [INFO] Секрет не введён - OAuth пропущен.")
+        return
+
+    os.environ['YANDEX_OAUTH2_KEY'] = key
+    os.environ['YANDEX_OAUTH2_SECRET'] = secret
+    print("  [OK] Ключи приняты (в памяти процесса).")
 
 
 def run(cmd: list, check: bool = True) -> subprocess.CompletedProcess:
@@ -49,18 +86,21 @@ def main() -> None:
         deps_ok = False
 
     if not deps_ok:
-        print("\n[1/4] Зависимости не найдены - устанавливаю из requirements.txt ...")
+        print("\n[1/5] Зависимости не найдены - устанавливаю из requirements.txt ...")
         run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
     else:
-        print("\n[1/4] Зависимности уже установлены - пропускаю.")
+        print("\n[1/5] Зависимости уже установлены - пропускаю.")
 
-    print("\n[2/4] Применяю миграции Django ...")
+    print("\n[2/5] Проверяю конфигурацию OAuth ...")
+    prompt_oauth_credentials()
+
+    print("\n[3/5] Применяю миграции Django ...")
     run([sys.executable, "manage.py", "migrate", "--noinput"])
 
-    print("\n[3/4] Собираю статические файлы ...")
+    print("\n[4/5] Собираю статические файлы ...")
     run([sys.executable, "manage.py", "collectstatic", "--noinput"], check=False)
 
-    print("\n[4/4] Запускаю сервер (uvicorn) ...")
+    print("\n[5/5] Запускаю сервер (uvicorn) ...")
     print("-" * 60)
     print(f"  Локальный адрес:   http://127.0.0.1:{PORT}")
     print(f"  Сеть (Codespaces): http://{HOST}:{PORT}")
