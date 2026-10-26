@@ -154,3 +154,66 @@ async def get_public_resource_download_link(
     finally:
         if close_session and session:
             await session.close()
+
+
+async def get_all_public_files(
+    public_key: str,
+    base_path: str = '/',
+    session: aiohttp.ClientSession | None = None
+) -> list[dict[str, str]]:
+    """Рекурсивно собирает все файлы из публичного диска по указанному пути."""
+    all_files = []
+    close_session = False
+    if session is None:
+        session = aiohttp.ClientSession()
+        close_session = True
+
+    try:
+        await _scan_directory(public_key, base_path, session, all_files)
+    except Exception as e:
+        logger.error(f"Ошибка рекурсивного обхода диска {public_key} (path={base_path}): {e}")
+    finally:
+        if close_session and session:
+            await session.close()
+
+    logger.info(f"Рекурсивный обход завершён: найдено {len(all_files)} файлов.")
+    return all_files
+
+
+async def _scan_directory(
+    public_key: str,
+    path: str,
+    session: aiohttp.ClientSession,
+    all_files: list[dict[str, str]]
+) -> None:
+    """Сканирует одну директорию и рекурсивно обрабатывает подпапки."""
+    offset = 0
+    limit = 50
+
+    while True:
+        data = await get_public_resource_meta(public_key, path=path, limit=limit, offset=offset, session=session)
+        if not data or 'embedded' not in data or 'items' not in data['embedded']:
+            break
+
+        items = data['embedded']['items']
+        dirs = [i for i in items if i.get('type') == 'dir']
+        files = [i for i in items if i.get('type') == 'file']
+
+        for file_item in files:
+            api_path = file_item.get('path', '/')
+            logger.debug(f"Найден файл: {api_path}")
+
+            download_url = await get_public_resource_download_link(public_key, path=api_path, session=session)
+            if download_url:
+                all_files.append({'api_path': api_path, 'url': download_url})
+            else:
+                logger.warning(f"Не удалось получить ссылку для файла: {api_path}")
+
+        for dir_item in dirs:
+            dir_path = dir_item.get('path', '/')
+            logger.debug(f"Рекурсивный обход подпапки: {dir_path}")
+            await _scan_directory(public_key, dir_path, session, all_files)
+
+        offset += len(items)
+        if len(items) < limit:
+            break

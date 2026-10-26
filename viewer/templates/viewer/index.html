@@ -165,8 +165,10 @@
                                 </span>
                                 <span class="file-icon-container">
                                      {% if item.preview %}
-                                         <img src="{{ item.preview }}" alt="{{ item.name }}" class="file-preview"
-                                              data-fullsize="{{ item.file }}" loading="lazy">
+                                          <img src="{{ item.preview }}" alt="{{ item.name }}" class="file-preview"
+                                               data-fullsize="{{ item.file }}" loading="lazy">
+                                     {% elif item.icon_path and item.icon_path != "file.svg" %}
+                                          <img src="{% static item.icon_path %}" alt="{{ item.name }}" class="file-icon">
                                      {% else %}
                                           <img src="{% static 'viewer/file.svg' %}" alt="Файл" class="file-icon">
                                      {% endif %}
@@ -192,6 +194,12 @@
                 {% if items|filter_files %}
                  <button type="submit" disabled>Скачать выбранное (.zip)</button>
                 {% endif %}
+            </form>
+
+            {# Download All ZIP Button #}
+            <form method="post" action="{% url 'viewer:download_all_zip' %}" class="download-all-form" style="margin-top: 10px;">
+                {% csrf_token %}
+                <button type="submit" class="btn-download-all">📦 Скачать всё (.zip, рекурсивно)</button>
             </form>
 
         {% elif data.type == 'file' %}

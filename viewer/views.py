@@ -19,7 +19,7 @@ from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 # Local Imports
 from .yadisk_api import (
     get_public_resource_meta, get_public_resource_download_link,
-    extract_public_key
+    extract_public_key, get_all_public_files
 )
 
 # Async Helpers
@@ -32,6 +32,50 @@ DEFAULT_PAGE_SIZE = 50
 ALLOWED_PAGE_SIZES = [25, 50, 100]
 DOWNLOAD_CONCURRENCY_LIMIT = 5 
 FILE_CHUNK_SIZE = 8192
+MAX_ZIP_DOWNLOAD_SIZE_MB = 2048
+RECURSIVE_DOWNLOAD_CONCURRENCY_LIMIT = 5
+
+FILE_EXTENSION_ICONS = {
+    'pdf': 'pdf',
+    'doc': 'doc',
+    'docx': 'doc',
+    'xls': 'xls',
+    'xlsx': 'xls',
+    'ppt': 'ppt',
+    'pptx': 'ppt',
+    'txt': 'txt',
+    'md': 'md',
+    'py': 'py',
+    'js': 'js',
+    'html': 'html',
+    'htm': 'html',
+    'css': 'html',
+    'json': 'json',
+    'csv': 'csv',
+    'zip': 'zip',
+    'rar': 'zip',
+    '7z': 'zip',
+    'tar': 'zip',
+    'gz': 'zip',
+    'mp3': 'mp3',
+    'wav': 'mp3',
+    'ogg': 'mp3',
+    'mp4': 'mp4',
+    'avi': 'mp4',
+    'mov': 'mp4',
+    'mkv': 'mp4',
+    'webm': 'mp4',
+}
+
+
+def get_extension_icon(filename: str) -> str:
+    ext = PurePath(filename).suffix.lstrip('.').lower()
+    if not ext:
+        return "file.svg"
+    icon_name = FILE_EXTENSION_ICONS.get(ext)
+    if icon_name:
+        return f"icons/{icon_name}.svg"
+    return "file.svg"
 
 
 # --- Helper Functions ---
@@ -111,6 +155,7 @@ def process_api_items(items_list_raw: List[Dict[str, Any]]) -> Tuple[List[Dict[s
 
             item_copy['url_path'] = Path(relative_path.replace('\\', '/')).as_posix()
             item_copy['normalized_api_path'] = f"/{item_copy['url_path'].lstrip('/')}"
+            item_copy['icon_path'] = get_extension_icon(item_copy.get('name', ''))
 
         elif item_type == 'dir':
             dir_path = item_copy.get('path', '/')
@@ -171,6 +216,7 @@ async def index(request: HttpRequest) -> HttpResponse:
         'total_items': 0,
         'dir_count': 0,
         'file_count': 0,
+        'file_extension_icons': FILE_EXTENSION_ICONS,
     }
 
     # Get parameters from GET request
@@ -677,4 +723,130 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
              except OSError as remove_err:
                  logger.error(f"Ошибка при удалении временного ZIP файла во время обработки ошибки: {remove_err}")
 
+        return HttpResponseServerError("Внутренняя ошибка сервера при обработке запроса на ZIP-архив.")
+
+
+@require_POST
+async def download_all_zip(request: HttpRequest) -> HttpResponse:
+    logger.info("Запуск рекурсивного скачивания всех файлов (ZIP)")
+    public_key = await get_session_value(request, 'public_key')
+    resource_type = await get_session_value(request, 'resource_type')
+    resource_name = await get_session_value(request, 'resource_name', 'yadisk-archive')
+
+    if not public_key:
+        logger.warning("Попытка скачать ZIP без public_key в сессии.")
+        return redirect('viewer:index')
+
+    if resource_type != 'dir':
+        logger.warning(f"Попытка скачать ZIP для ресурса не-папки: key={public_key}, type={resource_type}")
+        return redirect('viewer:index')
+
+    safe_name = slugify(resource_name) or 'archive'
+    zip_filename = f"{safe_name}-all-{now().strftime('%Y%m%d_%H%M%S')}.zip"
+    logger.info(f"Генерация полного ZIP '{zip_filename}' (рекурсивно).")
+
+    temp_dir_obj = tempfile.TemporaryDirectory()
+    temp_dir_path = temp_dir_obj.name
+    logger.debug(f"Создана временная директория для рекурсивного скачивания: {temp_dir_path}")
+
+    downloaded_files_map: Dict[str, str] = {}
+    zip_temp_filepath: str | None = None
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            all_files = await get_all_public_files(public_key, base_path='/', session=session)
+            if not all_files:
+                logger.error("Рекурсивный обход не нашёл ни одного файла.")
+                temp_dir_obj.cleanup()
+                return HttpResponse("В папке нет файлов для скачивания.", status=400)
+
+            logger.info(f"Найдено {len(all_files)} файлов для рекурсивного скачивания.")
+            failed_count = 0
+            semaphore = asyncio.Semaphore(RECURSIVE_DOWNLOAD_CONCURRENCY_LIMIT)
+
+            async def _download_one(file_info: dict) -> Tuple[str, str | None]:
+                async with semaphore:
+                    api_path = file_info['api_path']
+                    download_url = file_info['url']
+                    temp_path = os.path.join(temp_dir_path, f"{slugify(api_path)}_{id(file_info)}")
+                    try:
+                        async with session.get(download_url, timeout=aiohttp.ClientTimeout(total=RECURSIVE_DOWNLOAD_TIMEOUT)) as resp:
+                            if resp.status == 200:
+                                async with aiofiles.open(temp_path, 'wb') as f:
+                                    while True:
+                                        chunk = await resp.content.read(FILE_CHUNK_SIZE)
+                                        if not chunk:
+                                            break
+                                        await f.write(chunk)
+                                return (api_path, temp_path)
+                    except Exception as e:
+                        logger.error(f"Ошибка при скачивании {api_path}: {e}")
+                    return (api_path, None)
+
+            tasks = [_download_one(f) for f in all_files]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Исключение при скачивании: {result}")
+                    failed_count += 1
+                    continue
+                api_path, temp_path = result
+                if temp_path and os.path.exists(temp_path):
+                    downloaded_files_map[api_path] = temp_path
+                else:
+                    failed_count += 1
+
+        if not downloaded_files_map:
+            logger.error("Не удалось скачать ни одного файла при рекурсивном обходе.")
+            temp_dir_obj.cleanup()
+            return HttpResponse("Не удалось скачать файлы.", status=500)
+
+        logger.info(f"Рекурсивно скачано {len(downloaded_files_map)} файлов (ошибок: {failed_count}).")
+
+        zip_temp_file = await sync_to_async(tempfile.NamedTemporaryFile)(delete=False, suffix='.zip')
+        zip_temp_filepath = zip_temp_file.name
+        await sync_to_async(zip_temp_file.close)()
+
+        loop = asyncio.get_running_loop()
+        zip_success = await loop.run_in_executor(
+            None,
+            _create_zip_archive_sync,
+            zip_temp_filepath,
+            downloaded_files_map
+        )
+
+        try:
+            temp_dir_obj.cleanup()
+        except Exception as e:
+            logger.error(f"Ошибка при очистке временной директории: {e}")
+
+        if not zip_success:
+            return HttpResponseServerError("Ошибка при создании ZIP-архива на сервере.")
+
+        response = StreamingHttpResponse(
+            _zip_file_stream_generator(zip_temp_filepath, zip_filename),
+            content_type='application/zip'
+        )
+        try:
+            ascii_name = zip_filename.encode('ascii').decode('ascii')
+            response['Content-Disposition'] = f'attachment; filename="{ascii_name}"'
+        except UnicodeEncodeError:
+            encoded_name = quote(zip_filename)
+            response['Content-Disposition'] = f"attachment; filename*=UTF-8''{encoded_name}"
+
+        logger.info(f"Отправка полного ZIP-архива: {zip_filename}")
+        return response
+
+    except Exception as e:
+        logger.exception(f"Критическая ошибка в download_all_zip: {e}")
+        if 'temp_dir_obj' in locals() and hasattr(temp_dir_obj, 'name') and os.path.exists(temp_dir_obj.name):
+            try:
+                temp_dir_obj.cleanup()
+            except Exception:
+                pass
+        if zip_temp_filepath and os.path.exists(zip_temp_filepath):
+            try:
+                os.remove(zip_temp_filepath)
+            except OSError:
+                pass
         return HttpResponseServerError("Внутренняя ошибка сервера при обработке запроса на ZIP-архив.")
