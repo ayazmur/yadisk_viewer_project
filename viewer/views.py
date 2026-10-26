@@ -371,7 +371,7 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
     # 2. Асинхронный генератор с автоматическим повтором при разрыве ДО первого чанка
     async def stream_from_yadisk():
         timeout = aiohttp.ClientTimeout(total=3600, connect=60, sock_read=3600)
-            headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)'}
+        headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)'}
 
         sent_any = False  # отправили ли уже хоть один чанк браузеру
 
@@ -451,7 +451,7 @@ async def _download_file_to_temp(file_info: Dict[str, str], temp_dir: str, sessi
 
         try:
             timeout = aiohttp.ClientTimeout(total=600, connect=30, sock_read=600)
-        headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)'}
+            headers = {'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)'}
 
             async with session.get(url, timeout=timeout, headers=headers, allow_redirects=True) as resp:
                 resp.raise_for_status() 
