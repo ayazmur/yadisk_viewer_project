@@ -14,6 +14,7 @@ from django.views.decorators.http import require_GET, require_POST
 from django.utils.text import slugify
 from django.utils.timezone import now
 from django.conf import settings
+from django.contrib.auth import logout
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 
 # Local Imports
@@ -736,14 +737,9 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
         return HttpResponseServerError("Внутренняя ошибка сервера при обработке запроса на ZIP-архив.")
 
 def login_view(request):
-    from django.shortcuts import redirect
-    from social_django.utils import psa
-    from social_core.actions import do_login
     return redirect('social:begin', 'yandex-oauth2', next=request.path)
 
 def logout_view(request):
-    from django.contrib.auth import logout
-    from django.shortcuts import redirect
     logout(request)
     return redirect(settings.LOGIN_URL)
 
