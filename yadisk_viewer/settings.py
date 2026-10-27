@@ -36,6 +36,13 @@ CSRF_TRUSTED_ORIGINS = [
     'http://127.0.0.1:8000',
 ]
 
+# В Codespaces адрес уникален для каждого пространства: собираем его из окружения,
+# чтобы не хардкодить имя. Переменные задаёт сам Codespaces.
+_codespace_name = os.environ.get('CODESPACE_NAME')
+_forwarding_domain = os.environ.get('GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN')
+if _codespace_name and _forwarding_domain:
+    CSRF_TRUSTED_ORIGINS.append(f"https://{_codespace_name}-8000.{_forwarding_domain}")
+
 # Ключевая строка: сообщаем Django, что он работает за HTTPS-прокси
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 USE_X_FORWARDED_HOST = True
