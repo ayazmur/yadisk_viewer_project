@@ -6,7 +6,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Яндекс.Диск{% endblock %}</title>
-    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=2.1">
+    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=2.2">
     <script>
         (function () {
             try {
@@ -155,6 +155,9 @@
 
 <div id="imagePreviewModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCaption">
     <button class="modal-close" title="Закрыть (Esc)" aria-label="Закрыть окно предпросмотра">×</button>
+    <button class="modal-nav modal-prev" id="galleryPrev" type="button" title="Предыдущий (←)" aria-label="Предыдущий" hidden>‹</button>
+    <button class="modal-nav modal-next" id="galleryNext" type="button" title="Следующий (→)" aria-label="Следующий" hidden>›</button>
+    <div class="modal-counter" id="galleryCounter" hidden></div>
     <div class="modal-content-wrapper">
         <img class="modal-content" id="modalImage" alt="Превью изображения">
         <video class="modal-content" id="modalVideo" controls playsinline preload="metadata" hidden></video>
@@ -177,7 +180,7 @@
         indexUrl: "{% url 'viewer:index' %}"
     };
 </script>
-<script src="{% static 'viewer/disk.js' %}?v=2.1"></script>
+<script src="{% static 'viewer/disk.js' %}?v=2.2"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
