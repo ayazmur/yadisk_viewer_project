@@ -1,6 +1,10 @@
 *.sqlite3
 *.pyc
 *.png
+!docs/screenshots/*.png
+!docs/screenshots/*.jpg
+!docs/screenshots/*.jpeg
+!docs/screenshots/*.webp
 __pycache__/
 staticfiles/
 venv/
