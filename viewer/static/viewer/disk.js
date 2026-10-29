@@ -569,13 +569,58 @@
         pumpQueue();
     }
 
+    function postForm(url, params) {
+        return fetch(url, {
+            method: 'POST',
+            headers: {
+                'X-CSRFToken': getCsrfToken(),
+                'X-Requested-With': 'XMLHttpRequest',
+                'Accept': 'application/json'
+            },
+            credentials: 'same-origin',
+            body: params
+        }).then(function (response) {
+            return response.json().catch(function () {
+                return {};
+            }).then(function (data) {
+                return { ok: response.ok, status: response.status, data: data };
+            });
+        });
+    }
+
+    function abortUploadSession(uploadId) {
+        if (!uploadId) {
+            return;
+        }
+        try {
+            fetch(CONFIG.uploadAbortUrl, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCsrfToken(),
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                },
+                credentials: 'same-origin',
+                keepalive: true,
+                body: new URLSearchParams({ upload_id: uploadId })
+            });
+        } catch (e) {}
+    }
+
     function cancelUpload(item) {
         if (item.status === 'queued') {
             finishUpload(item, 'canceled');
             return;
         }
-        if (item.xhr && item.status === 'uploading') {
+        if (item.status === 'uploading' && item.xhr) {
             item.xhr.abort();
+            return;
+        }
+        if (item.uploadId) {
+            abortUploadSession(item.uploadId);
+        }
+        if (item.status === 'uploading' || item.status === 'saving') {
+            finishUpload(item, 'canceled');
         }
     }
 
@@ -584,60 +629,158 @@
         activeUploads += 1;
         renderItem(item);
 
-        var xhr = new XMLHttpRequest();
-        item.xhr = xhr;
+        var DEFAULT_CHUNK = 4 * 1024 * 1024;
+        var MIN_CHUNK = 256 * 1024;
+        var total = item.file.size;
+        var chunkSize = DEFAULT_CHUNK;
+        var uploadId = null;
+        var offset = 0;
 
-        var form = new FormData();
-        form.append('file', item.file, item.file.name);
-        form.append('path', CONFIG.currentPath || '/');
-        form.append('overwrite', 'true');
-
-        xhr.open('POST', CONFIG.uploadUrl, true);
-        xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
-        xhr.setRequestHeader('Accept', 'application/json');
-        var csrf = getCsrfToken();
-        if (csrf) {
-            xhr.setRequestHeader('X-CSRFToken', csrf);
+        function stopWithError(message) {
+            if (item.finished) {
+                return;
+            }
+            if (uploadId) {
+                abortUploadSession(uploadId);
+            }
+            finishUpload(item, 'error', message);
+            toast('«' + item.file.name + '»: ' + message, 'error');
         }
 
-        xhr.upload.onprogress = function (event) {
-            if (event.lengthComputable) {
-                item.progress = (event.loaded / event.total) * 100;
-                renderItem(item);
+        function stopCanceled() {
+            if (item.finished) {
+                return;
             }
-        };
+            if (uploadId) {
+                abortUploadSession(uploadId);
+            }
+            finishUpload(item, 'canceled');
+        }
 
-        xhr.upload.onload = function () {
+        function completeUpload() {
             item.status = 'saving';
             item.progress = 100;
             renderItem(item);
-        };
+            postForm(CONFIG.uploadCompleteUrl, new URLSearchParams({ upload_id: uploadId }))
+                .then(function (result) {
+                    if (item.finished) {
+                        return;
+                    }
+                    if (result.ok && result.data.ok) {
+                        finishUpload(item, 'done');
+                    } else {
+                        stopWithError(result.data.message || ('Не удалось сохранить файл (' + result.status + ')'));
+                    }
+                })
+                .catch(function () {
+                    stopWithError('Сетевая ошибка при сохранении файла');
+                });
+        }
 
-        xhr.onload = function () {
-            var data = null;
-            try {
-                data = JSON.parse(xhr.responseText);
-            } catch (e) {}
-
-            if (xhr.status >= 200 && xhr.status < 300 && data && data.ok) {
-                finishUpload(item, 'done');
+        function sendChunk() {
+            if (item.finished) {
                 return;
             }
-            var message = (data && data.message) || 'Ошибка загрузки (' + xhr.status + ')';
-            finishUpload(item, 'error', message);
-            toast('«' + item.file.name + '»: ' + message, 'error');
-        };
+            if (offset >= total) {
+                completeUpload();
+                return;
+            }
 
-        xhr.onerror = function () {
-            finishUpload(item, 'error', 'Сетевая ошибка');
-            toast('«' + item.file.name + '»: сетевая ошибка', 'error');
-        };
+            var end = Math.min(offset + chunkSize, total);
+            var blob = item.file.slice(offset, end);
+            var xhr = new XMLHttpRequest();
+            item.xhr = xhr;
 
-        xhr.onabort = function () {
-            finishUpload(item, 'canceled');
-        };
+            var form = new FormData();
+            form.append('upload_id', uploadId);
+            form.append('offset', String(offset));
+            form.append('chunk', blob, 'chunk');
 
-        xhr.send(form);
+            xhr.open('POST', CONFIG.uploadChunkUrl, true);
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            xhr.setRequestHeader('Accept', 'application/json');
+            var csrf = getCsrfToken();
+            if (csrf) {
+                xhr.setRequestHeader('X-CSRFToken', csrf);
+            }
+
+            xhr.upload.onprogress = function (event) {
+                if (!event.lengthComputable) {
+                    return;
+                }
+                item.progress = ((offset + (event.loaded / event.total) * (end - offset)) / total) * 100;
+                renderItem(item);
+            };
+
+            xhr.onload = function () {
+                item.xhr = null;
+                if (item.finished) {
+                    return;
+                }
+                var data = null;
+                try {
+                    data = JSON.parse(xhr.responseText);
+                } catch (e) {}
+
+                if (xhr.status >= 200 && xhr.status < 300 && data && data.ok) {
+                    offset = end;
+                    item.progress = (offset / total) * 100;
+                    renderItem(item);
+                    sendChunk();
+                    return;
+                }
+
+                if (xhr.status === 413 && chunkSize > MIN_CHUNK) {
+                    chunkSize = Math.max(MIN_CHUNK, Math.floor(chunkSize / 2));
+                    sendChunk();
+                    return;
+                }
+
+                stopWithError((data && data.message) || ('Ошибка загрузки (' + xhr.status + ')'));
+            };
+
+            xhr.onerror = function () {
+                item.xhr = null;
+                stopWithError('Сетевая ошибка');
+            };
+
+            xhr.onabort = function () {
+                item.xhr = null;
+                stopCanceled();
+            };
+
+            xhr.send(form);
+        }
+
+        postForm(CONFIG.uploadInitUrl, new URLSearchParams({
+            name: item.file.name,
+            size: String(total),
+            path: CONFIG.currentPath || '/',
+            overwrite: 'true'
+        })).then(function (result) {
+            if (item.finished) {
+                if (result.data && result.data.upload_id) {
+                    abortUploadSession(result.data.upload_id);
+                }
+                return;
+            }
+            if (!result.ok || !result.data.ok) {
+                throw new Error(result.data.message || ('Не удалось начать загрузку (' + result.status + ')'));
+            }
+            uploadId = result.data.upload_id;
+            item.uploadId = uploadId;
+            if (result.data.chunk_size) {
+                chunkSize = result.data.chunk_size;
+            }
+            if (result.data.min_chunk_size) {
+                MIN_CHUNK = result.data.min_chunk_size;
+            }
+            sendChunk();
+        }).catch(function (error) {
+            if (!item.finished) {
+                stopWithError(error.message || 'Сетевая ошибка');
+            }
+        });
     }
 
     function pumpQueue() {

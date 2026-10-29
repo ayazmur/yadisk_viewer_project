@@ -167,6 +167,10 @@
         canWrite: {{ can_write|yesno:"true,false" }},
         currentPath: "{{ current_path|default:'/'|escapejs }}",
         uploadUrl: "{% url 'viewer:upload_file' %}",
+        uploadInitUrl: "{% url 'viewer:upload_init' %}",
+        uploadChunkUrl: "{% url 'viewer:upload_chunk' %}",
+        uploadCompleteUrl: "{% url 'viewer:upload_complete' %}",
+        uploadAbortUrl: "{% url 'viewer:upload_abort' %}",
         createFolderUrl: "{% url 'viewer:create_folder' %}",
         indexUrl: "{% url 'viewer:index' %}"
     };

@@ -11,5 +11,9 @@ urlpatterns = [
     path('login/', views.login_view, name='login'),
     path('logout/', views.logout_view, name='logout'),
     path('upload/', views.upload_file, name='upload_file'),
+    path('upload/init/', views.upload_init, name='upload_init'),
+    path('upload/chunk/', views.upload_chunk, name='upload_chunk'),
+    path('upload/complete/', views.upload_complete, name='upload_complete'),
+    path('upload/abort/', views.upload_abort, name='upload_abort'),
     path('create_folder/', views.create_folder, name='create_folder'),
 ]

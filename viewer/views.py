@@ -1,4 +1,5 @@
 import aiohttp, asyncio, logging, mimetypes, zipfile, os, tempfile, aiofiles, re
+import json, shutil, time, uuid
 import requests
 from urllib.parse import quote, unquote, urlencode
 from pathlib import PurePath, Path
@@ -43,6 +44,13 @@ RECURSIVE_DOWNLOAD_CONCURRENCY_LIMIT = 5
 RECURSIVE_DOWNLOAD_TIMEOUT = 3600
 INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 MAX_RESOURCE_NAME_LENGTH = 255
+
+UPLOAD_SESSION_ROOT = os.path.join(tempfile.gettempdir(), 'yadisk_uploads')
+UPLOAD_SESSION_TTL = 6 * 3600
+UPLOAD_CHUNK_DEFAULT_BYTES = 4 * 1024 * 1024
+UPLOAD_CHUNK_MIN_BYTES = 256 * 1024
+UPLOAD_CHUNK_MAX_BYTES = 16 * 1024 * 1024
+UPLOAD_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 
 FILE_EXTENSION_ICONS = {
     'pdf': 'pdf',
@@ -250,6 +258,77 @@ def validate_resource_name(name: str) -> str | None:
     if INVALID_NAME_CHARS.search(name):
         return 'Имя не должно содержать символы \\ / : * ? " < > |.'
     return None
+
+
+# --- Chunked upload helpers ---
+
+UPLOAD_LINK_ERRORS = {
+    'noperm': ('Нет права записи. Добавьте в приложении Яндекса доступ «Яндекс.Диск REST API» с записью и войдите заново.', 403),
+    'exists': ('Файл с таким именем уже существует.', 409),
+    'network': ('Не удалось связаться с Яндекс.Диском.', 502),
+    'error': ('Не удалось подготовить загрузку файла.', 502),
+}
+
+
+def _disk_write_token(request: HttpRequest) -> Tuple[str | None, str | None]:
+    if request.session.get('view_mode', 'public') != 'disk':
+        return None, 'public_mode'
+    token = _get_yandex_token_sync(request)
+    if not token:
+        return None, 'nologin'
+    return token, None
+
+
+def _json_upload_auth_error(code: str) -> JsonResponse:
+    if code == 'nologin':
+        return _json_error('Сессия авторизации истекла — войдите через Яндекс заново.', code, 401)
+    return _json_error('Загрузка доступна только в режиме «Мой диск».', code, 403)
+
+
+def _upload_session_dir(upload_id: str) -> str | None:
+    if not upload_id or not UPLOAD_ID_RE.fullmatch(upload_id):
+        return None
+    return os.path.join(UPLOAD_SESSION_ROOT, upload_id)
+
+
+def _read_upload_meta(upload_id: str) -> dict | None:
+    directory = _upload_session_dir(upload_id)
+    if not directory:
+        return None
+    try:
+        with open(os.path.join(directory, 'meta.json'), encoding='utf-8') as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _write_upload_meta(upload_id: str, meta: dict) -> None:
+    directory = _upload_session_dir(upload_id)
+    if not directory:
+        return
+    with open(os.path.join(directory, 'meta.json'), 'w', encoding='utf-8') as fh:
+        json.dump(meta, fh)
+
+
+def _discard_upload(upload_id: str) -> None:
+    directory = _upload_session_dir(upload_id)
+    if directory:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _cleanup_stale_uploads() -> None:
+    try:
+        entries = list(os.scandir(UPLOAD_SESSION_ROOT))
+    except OSError:
+        return
+    now_ts = time.time()
+    for entry in entries:
+        try:
+            if entry.is_dir() and now_ts - entry.stat().st_mtime > UPLOAD_SESSION_TTL:
+                shutil.rmtree(entry.path, ignore_errors=True)
+        except OSError:
+            continue
 
 
 # --- Main View ---
@@ -948,6 +1027,182 @@ def upload_file(request: HttpRequest) -> HttpResponse:
             'size': uploaded.size,
         })
     return redirect(f"{back_url}&upload=ok")
+
+
+@require_POST
+def upload_init(request: HttpRequest) -> HttpResponse:
+    """Создаёт сессию чанковой загрузки (обход лимита размера запроса прокси)."""
+    token, auth_error = _disk_write_token(request)
+    if auth_error:
+        return _json_upload_auth_error(auth_error)
+
+    name = (request.POST.get('name') or '').strip()
+    name_error = validate_resource_name(name)
+    if name_error:
+        return _json_error(name_error, 'invalid_name')
+
+    try:
+        total_size = int(request.POST.get('size') or 0)
+    except (TypeError, ValueError):
+        total_size = 0
+    if total_size <= 0:
+        return _json_error('Не удалось определить размер файла.', 'invalid_size')
+
+    folder_path = normalize_disk_path(request.POST.get('path') or request.session.get('current_path', '/'))
+    target_path = folder_path.rstrip('/') + '/' + name
+    overwrite = request.POST.get('overwrite', 'true').lower() != 'false'
+
+    _cleanup_stale_uploads()
+    upload_id = uuid.uuid4().hex
+    directory = _upload_session_dir(upload_id)
+    try:
+        os.makedirs(directory, exist_ok=True)
+    except OSError:
+        logger.exception("Не удалось создать каталог временной загрузки.")
+        return _json_error('Не удалось начать загрузку на сервере.', 'io_error', 500)
+
+    _write_upload_meta(upload_id, {
+        'name': name,
+        'target_path': target_path,
+        'folder_path': folder_path,
+        'size': total_size,
+        'received_bytes': 0,
+        'received_chunks': 0,
+        'overwrite': overwrite,
+        'created': time.time(),
+    })
+    logger.info(f"Чанковая загрузка '{target_path}' начата ({total_size} байт), id={upload_id}.")
+    return JsonResponse({
+        'ok': True,
+        'upload_id': upload_id,
+        'chunk_size': UPLOAD_CHUNK_DEFAULT_BYTES,
+        'min_chunk_size': UPLOAD_CHUNK_MIN_BYTES,
+    })
+
+
+@require_POST
+def upload_chunk(request: HttpRequest) -> HttpResponse:
+    """Принимает очередную часть файла и дописывает её во временный файл."""
+    _token, auth_error = _disk_write_token(request)
+    if auth_error:
+        return _json_upload_auth_error(auth_error)
+
+    upload_id = (request.POST.get('upload_id') or '').strip()
+    meta = _read_upload_meta(upload_id)
+    if not meta:
+        return _json_error('Сессия загрузки не найдена или истекла.', 'session_expired', 410)
+
+    try:
+        offset = int(request.POST.get('offset') or 0)
+    except (TypeError, ValueError):
+        offset = -1
+    received_bytes = int(meta.get('received_bytes', 0))
+    if offset != received_bytes:
+        return _json_error('Нарушен порядок частей файла.', 'bad_offset', 409)
+
+    chunk = request.FILES.get('chunk')
+    if not chunk:
+        return _json_error('Часть файла не получена.', 'empty_chunk')
+    if chunk.size > UPLOAD_CHUNK_MAX_BYTES:
+        return _json_error('Слишком большой размер части файла.', 'chunk_too_large', 413)
+
+    total_size = int(meta.get('size', 0))
+    if received_bytes + chunk.size > total_size:
+        return _json_error('Размер файла превышает заявленный.', 'size_mismatch')
+
+    directory = _upload_session_dir(upload_id)
+    data_path = os.path.join(directory, 'data.part')
+    try:
+        with open(data_path, 'ab') as out:
+            for piece in chunk.chunks():
+                out.write(piece)
+    except OSError:
+        logger.exception(f"Не удалось записать часть файла для upload_id={upload_id}.")
+        return _json_error('Не удалось сохранить часть файла.', 'io_error', 500)
+
+    meta['received_bytes'] = received_bytes + chunk.size
+    meta['received_chunks'] = int(meta.get('received_chunks', 0)) + 1
+    meta['updated'] = time.time()
+    _write_upload_meta(upload_id, meta)
+    return JsonResponse({
+        'ok': True,
+        'received_bytes': meta['received_bytes'],
+        'received_chunks': meta['received_chunks'],
+    })
+
+
+@require_POST
+def upload_complete(request: HttpRequest) -> HttpResponse:
+    """Собирает файл и отправляет его на Яндекс.Диск."""
+    token, auth_error = _disk_write_token(request)
+    if auth_error:
+        return _json_upload_auth_error(auth_error)
+
+    upload_id = (request.POST.get('upload_id') or '').strip()
+    meta = _read_upload_meta(upload_id)
+    if not meta:
+        return _json_error('Сессия загрузки не найдена или истекла.', 'session_expired', 410)
+
+    total_size = int(meta.get('size', 0))
+    received_bytes = int(meta.get('received_bytes', 0))
+    if received_bytes != total_size:
+        return _json_error(
+            f'Файл загружен не полностью ({received_bytes} из {total_size} байт).',
+            'incomplete',
+        )
+
+    directory = _upload_session_dir(upload_id)
+    data_path = os.path.join(directory, 'data.part')
+    if not os.path.exists(data_path):
+        return _json_error('Временный файл не найден.', 'session_expired', 410)
+
+    target_path = meta['target_path']
+    logger.info(f"Сохранение '{target_path}' на Яндекс.Диск ({received_bytes} байт).")
+
+    href, link_error = get_disk_upload_link_sync(
+        token, target_path, overwrite=bool(meta.get('overwrite', True))
+    )
+    if not href:
+        _discard_upload(upload_id)
+        message, status = UPLOAD_LINK_ERRORS.get(link_error, UPLOAD_LINK_ERRORS['error'])
+        return _json_error(message, link_error or 'error', status)
+
+    try:
+        with open(data_path, 'rb') as file_obj:
+            put_resp = requests.put(
+                href,
+                data=file_obj,
+                headers={'Content-Type': 'application/octet-stream'},
+                timeout=(30, 7200),
+            )
+    except requests.RequestException as e:
+        logger.exception(f"Сетевая ошибка при сохранении '{target_path}': {e}")
+        _discard_upload(upload_id)
+        return _json_error('Сетевая ошибка при сохранении файла.', 'network', 502)
+
+    if put_resp.status_code not in (200, 201, 202, 204):
+        logger.error(f"Ошибка сохранения '{target_path}': {put_resp.status_code} {put_resp.text[:200]}")
+        _discard_upload(upload_id)
+        return _json_error(f'Яндекс.Диск вернул ошибку {put_resp.status_code}.', 'error', 502)
+
+    _discard_upload(upload_id)
+    logger.info(f"Файл '{target_path}' успешно сохранён.")
+    return JsonResponse({
+        'ok': True,
+        'name': meta['name'],
+        'path': target_path,
+        'size': received_bytes,
+    })
+
+
+@require_POST
+def upload_abort(request: HttpRequest) -> HttpResponse:
+    """Удаляет временные данные прерванной загрузки."""
+    _token, auth_error = _disk_write_token(request)
+    if auth_error:
+        return _json_upload_auth_error(auth_error)
+    _discard_upload((request.POST.get('upload_id') or '').strip())
+    return JsonResponse({'ok': True})
 
 
 @require_POST
