@@ -1,186 +1,177 @@
+{% load static %}
+{% load viewer_extras %}
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}Просмотр Яндекс.Диска{% endblock %}</title>
-    {% load static %}
-    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=1.2"> 
+    <title>{% block title %}Яндекс.Диск{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=2.0">
+    <script>
+        (function () {
+            try {
+                var saved = localStorage.getItem('yd-theme');
+                if (saved === 'light' || saved === 'dark') {
+                    document.documentElement.dataset.theme = saved;
+                }
+            } catch (e) {}
+        })();
+    </script>
     {% block head_extra %}{% endblock %}
 </head>
 <body>
-<header class="main-header">
-    <h1>Просмотр публичных ссылок Яндекс.Диска</h1>
-    {% if user.is_authenticated %}
-        <div class="user-info">
-            <span>Привет, {{ user.get_full_name|default:user.username }}</span>
-            <a href="{% url 'viewer:logout' %}" class="btn btn-small">Выйти</a>
+<div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+        <a href="{% url 'viewer:index' %}" class="brand" title="Яндекс.Диск">
+            <span class="brand-mark">Я</span>
+            <span class="brand-name">Диск</span>
+        </a>
+
+        <div class="sidebar-actions">
+            {% if can_write %}
+                <button type="button" class="btn btn-primary btn-block" id="upload-button">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4v11m0-11 4 4m-4-4-4 4M5 18h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    Загрузить
+                </button>
+                <button type="button" class="btn btn-secondary btn-block" id="create-folder-button">
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                    Создать папку
+                </button>
+            {% elif not user.is_authenticated %}
+                <a href="{% url 'viewer:login' %}" class="btn btn-login btn-block">Войти через Яндекс</a>
+            {% endif %}
         </div>
-    {% else %}
-        <a href="{% url 'viewer:login' %}" class="btn btn-login">Войти через Яндекс</a>
-    {% endif %}
-</header>
 
-    <main>
-        {% block content %}
-        {% endblock %}
-    </main>
+        <nav class="sidebar-nav" aria-label="Разделы">
+            {% if has_disk_access %}
+                <a href="{% url 'viewer:index' %}?source=disk" class="nav-item {% if disk_mode %}active{% endif %}">
+                    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+                    Мой диск
+                </a>
+            {% endif %}
+            <a href="{% url 'viewer:index' %}?source=public" class="nav-item {% if not disk_mode %}active{% endif %}">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1.5 1.5M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1.5-1.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                Публичные ссылки
+            </a>
+        </nav>
 
-    <footer>
-        <p>Приложение для просмотра публичных ссылок Яндекс.Диска.</p>
-    </footer>
-
-    {# ZIP Loading Overlay #}
-    <div id="zipLoadingOverlay" class="loading-overlay" role="status" aria-live="polite">
-        <div class="spinner" aria-hidden="true"></div>
-        <p>Создаём архив, это может занять некоторое время...</p>
-    </div>
-
-    {# Image Preview Modal Structure #}
-    <div id="imagePreviewModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCaption">
-        <button class="modal-close" title="Закрыть (Esc)" aria-label="Закрыть окно предпросмотра">×</button>
-        <div class="modal-content-wrapper">
-             <img class="modal-content" id="modalImage" alt="Превью изображения">
+        {% if data.type == 'dir' and available_file_types %}
+        <div class="sidebar-section">
+            <div class="sidebar-title">Фильтры</div>
+            <a href="{% url 'viewer:index' %}?{% nav_params request.GET disk_mode filter='all' page=None as all_nav %}{{ all_nav.urlencode }}"
+               class="sidebar-filter {% if filter_type == 'all' %}active{% endif %}">Все файлы</a>
+            {% available_file_types_map as filter_map %}
+            {% for type_key, type_name in filter_map.items %}
+                {% if type_key in available_file_types %}
+                    <a href="{% url 'viewer:index' %}?{% nav_params request.GET disk_mode filter=type_key page=None as type_nav %}{{ type_nav.urlencode }}"
+                       class="sidebar-filter {% if filter_type == type_key %}active{% endif %}">{{ type_name }}</a>
+                {% endif %}
+            {% endfor %}
         </div>
-        <div id="modalCaption" class="modal-caption"></div>
+        {% endif %}
+
+        <div class="sidebar-footer">
+            <button type="button" class="theme-toggle" id="theme-toggle" title="Сменить тему">
+                <svg class="theme-icon theme-icon-light" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                <svg class="theme-icon theme-icon-dark" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+                <span>Тема</span>
+            </button>
+
+            {% if user.is_authenticated %}
+                <div class="user-card">
+                    <span class="avatar">{{ user.get_full_name|default:user.username|slice:":1"|upper }}</span>
+                    <span class="user-name" title="{{ user.get_full_name|default:user.username }}">{{ user.get_full_name|default:user.username }}</span>
+                    <a href="{% url 'viewer:logout' %}" class="logout-link" title="Выйти">Выйти</a>
+                </div>
+            {% else %}
+                <div class="user-card user-card-guest">
+                    <span class="avatar avatar-guest">?</span>
+                    <a href="{% url 'viewer:login' %}" class="user-name">Войти через Яндекс</a>
+                </div>
+            {% endif %}
+        </div>
+    </aside>
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+    <div class="workspace">
+        <header class="topbar">
+            <button type="button" class="icon-btn menu-btn" id="menu-button" aria-label="Меню">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+            <div class="topbar-title">
+                {% block topbar_title %}{% if disk_mode %}Мой диск{% else %}Яндекс.Диск{% endif %}{% endblock %}
+            </div>
+            <div class="topbar-actions">
+                {% if disk_mode %}
+                    <button type="button" class="btn btn-primary btn-compact" id="upload-button-top">Загрузить</button>
+                {% endif %}
+            </div>
+        </header>
+
+        <main class="content">
+            {% block content %}{% endblock %}
+        </main>
     </div>
+</div>
 
-    {% block scripts %}
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const modal = document.getElementById("imagePreviewModal");
-            const modalImg = document.getElementById("modalImage");
-            const captionText = document.getElementById("modalCaption");
-            const closeModalButton = document.querySelector(".modal-close");
+<input type="file" id="file-input" multiple hidden>
 
-            // --- Image Modal Logic ---
-            function openImageModal(imgElement) {
-                if (!modal || !modalImg || !captionText || !imgElement) return;
-                const fullImageUrl = imgElement.dataset.fullsize;
-                const altText = imgElement.alt || "Превью изображения";
-                if (fullImageUrl) {
-                    modal.style.display = "flex";
-                    modalImg.src = fullImageUrl;
-                    captionText.textContent = altText;
-                    closeModalButton.focus();
-                }
-            }
+<div class="drop-overlay" id="drop-overlay" aria-hidden="true">
+    <div class="drop-overlay-inner">
+        <svg viewBox="0 0 24 24" width="42" height="42" aria-hidden="true"><path d="M12 16V4m0 0 5 5m-5-5-5 5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <p>Отпустите файлы, чтобы загрузить их в текущую папку</p>
+    </div>
+</div>
 
-            function closeModal() {
-                if (!modal) return;
-                modal.style.display = "none";
-                modalImg.src = "";
-                captionText.textContent = "";
-            }
+<div class="upload-panel" id="upload-panel" hidden>
+    <div class="upload-panel-header">
+        <span>Загрузки <span class="upload-badge" id="upload-count">0</span></span>
+        <div class="upload-panel-actions">
+            <button type="button" class="link-btn" id="upload-clear">Очистить</button>
+            <button type="button" class="icon-btn" id="upload-collapse" title="Свернуть">–</button>
+        </div>
+    </div>
+    <div class="upload-list" id="upload-list"></div>
+</div>
 
-            document.addEventListener('click', function(event) {
-                const preview = event.target.closest('.file-preview');
-                 if (preview) {
-                    event.preventDefault();
-                    openImageModal(preview);
-                }
-            });
+<div class="modal-card" id="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-modal-title">
+    <div class="modal-card-inner">
+        <h2 id="folder-modal-title">Создать папку</h2>
+        <form id="folder-form" method="post" action="{% url 'viewer:create_folder' %}">
+            {% csrf_token %}
+            <input type="hidden" name="path" value="{{ current_path|default:'/' }}">
+            <label class="field-label" for="folder-name">Название папки</label>
+            <input type="text" id="folder-name" name="name" maxlength="255" autocomplete="off" required>
+            <p class="form-error" id="folder-error" hidden></p>
+            <div class="modal-card-actions">
+                <button type="button" class="btn btn-secondary" id="folder-cancel">Отмена</button>
+                <button type="submit" class="btn btn-primary" id="folder-submit">Создать</button>
+            </div>
+        </form>
+    </div>
+</div>
 
-            if (closeModalButton) {
-                closeModalButton.onclick = closeModal;
-            }
-            if (modal) {
-                modal.addEventListener('click', function(event) {
-                    if (event.target === modal) {
-                        closeModal();
-                    }
-                });
-            }
-            document.addEventListener('keydown', function(event) {
-                if (event.key === "Escape" && modal && modal.style.display === "flex") {
-                    closeModal();
-                }
-            });
+<div class="toast-container" id="toast-container" aria-live="polite"></div>
 
-            // --- ZIP Download Checkbox Logic ---
-            const selectAllCheckbox = document.getElementById('select-all');
-            const fileCheckboxes = document.querySelectorAll('.file-list input[name="selected_files"]');
-            const zipButton = document.querySelector('.zip-download-form button[type="submit"]');
+<div id="imagePreviewModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCaption">
+    <button class="modal-close" title="Закрыть (Esc)" aria-label="Закрыть окно предпросмотра">×</button>
+    <div class="modal-content-wrapper">
+        <img class="modal-content" id="modalImage" alt="Превью изображения">
+    </div>
+    <div id="modalCaption" class="modal-caption"></div>
+</div>
 
-            function toggleZipButton() {
-                if (!zipButton || fileCheckboxes.length === 0) return;
-                const anyChecked = Array.from(fileCheckboxes).some(cb => cb.checked);
-                zipButton.disabled = !anyChecked;
-            }
-
-            if (selectAllCheckbox) {
-                selectAllCheckbox.addEventListener('change', function() {
-                    fileCheckboxes.forEach(checkbox => {
-                        checkbox.checked = selectAllCheckbox.checked;
-                    });
-                    toggleZipButton();
-                });
-            }
-
-            fileCheckboxes.forEach(checkbox => {
-                checkbox.addEventListener('change', function() {
-                    if (!checkbox.checked && selectAllCheckbox) {
-                        selectAllCheckbox.checked = false;
-                    }
-                    else if (selectAllCheckbox && Array.from(fileCheckboxes).every(cb => cb.checked)) {
-                        selectAllCheckbox.checked = true;
-                    }
-                    toggleZipButton();
-                });
-            });
-
-            if(zipButton) {
-                toggleZipButton();
-            }
-
-            // --- Folder Row Click Handler ---
-            document.querySelectorAll('.list-item-dir').forEach(function(row) {
-                row.style.cursor = 'pointer';
-                row.addEventListener('click', function(event) {
-                    if (event.target.tagName === 'A' || event.target.closest('a')) {
-                        return;
-                    }
-                    const link = row.querySelector('a');
-                    if (link) {
-                        window.location.href = link.href;
-                    }
-                });
-            });
-
-            // --- Form Submission UX ---
-            const urlForm = document.querySelector('form.url-input-form');
-            if (urlForm) {
-                const submitButton = urlForm.querySelector('button[type="submit"]');
-                if (submitButton) {
-                    urlForm.addEventListener('submit', function() {
-                        submitButton.disabled = true;
-                        submitButton.textContent = 'Загрузка...';
-                    });
-                }
-            }
-
-              const zipForm = document.getElementById('zip-form');
-              if (zipForm) {
-                  zipForm.addEventListener('submit', function() {
-                      const overlay = document.getElementById('zipLoadingOverlay');
-                      if (overlay) {
-                          overlay.classList.add('active');
-                      }
-                  });
-              }
-
-            // --- Auto-paste yadisk link from clipboard on load ---
-            const urlInput = document.querySelector('form.url-input-form input[name="public_url"]');
-            if (urlInput && !urlInput.value && navigator.clipboard && navigator.clipboard.readText) {
-                navigator.clipboard.readText().then(text => {
-                    if (text && !urlInput.value && /disk\.yandex\.(ru|com)|yadi\.sk/i.test(text)) {
-                        urlInput.value = text.trim();
-                    }
-                }).catch(() => {});
-            }
-
-        });
-    </script>
-    {% endblock %}
+<script>
+    window.VIEWER = {
+        diskMode: {{ disk_mode|yesno:"true,false" }},
+        canWrite: {{ can_write|yesno:"true,false" }},
+        currentPath: "{{ current_path|default:'/'|escapejs }}",
+        uploadUrl: "{% url 'viewer:upload_file' %}",
+        createFolderUrl: "{% url 'viewer:create_folder' %}",
+        indexUrl: "{% url 'viewer:index' %}"
+    };
+</script>
+<script src="{% static 'viewer/disk.js' %}?v=2.0"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

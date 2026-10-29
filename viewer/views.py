@@ -1,4 +1,4 @@
-import aiohttp, asyncio, logging, mimetypes, zipfile, os, tempfile, aiofiles
+import aiohttp, asyncio, logging, mimetypes, zipfile, os, tempfile, aiofiles, re
 import requests
 from urllib.parse import quote, unquote, urlencode
 from pathlib import PurePath, Path
@@ -9,7 +9,7 @@ import math
 from django.shortcuts import render, redirect
 from django.http import (
     HttpRequest, HttpResponse, StreamingHttpResponse, FileResponse,
-    Http404, HttpResponseRedirect, HttpResponseServerError
+    Http404, HttpResponseRedirect, HttpResponseServerError, JsonResponse
 )
 from django.views.decorators.http import require_GET, require_POST
 from django.utils.text import slugify
@@ -24,7 +24,8 @@ from .yadisk_api import (
     get_public_resource_meta, get_public_resource_download_link,
     extract_public_key, get_all_public_files,
     get_disk_resource_meta, get_disk_download_link, get_all_disk_files,
-    normalize_disk_path, DISK_UPLOAD_API_URL,
+    normalize_disk_path,
+    create_disk_folder_sync, get_disk_upload_link_sync,
 )
 
 # Async Helpers
@@ -39,6 +40,9 @@ DOWNLOAD_CONCURRENCY_LIMIT = 5
 FILE_CHUNK_SIZE = 8192
 MAX_ZIP_DOWNLOAD_SIZE_MB = 2048
 RECURSIVE_DOWNLOAD_CONCURRENCY_LIMIT = 5
+RECURSIVE_DOWNLOAD_TIMEOUT = 3600
+INVALID_NAME_CHARS = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+MAX_RESOURCE_NAME_LENGTH = 255
 
 FILE_EXTENSION_ICONS = {
     'pdf': 'pdf',
@@ -127,7 +131,7 @@ def filter_items(items: List[Dict[str, Any]], filter_type: str) -> List[Dict[str
         return items
     return [
         item for item in items
-        if item.get('type') == 'file' and get_file_category(item) == filter_type
+        if item.get('type') == 'dir' or get_file_category(item) == filter_type
     ]
 
 def generate_breadcrumbs(path_str: str) -> List[Dict[str, str]]:
@@ -224,6 +228,30 @@ async def get_yandex_token(request: HttpRequest) -> str | None:
     return await sync_to_async(_get_yandex_token_sync)(request)
 
 
+def _wants_json(request: HttpRequest) -> bool:
+    return (
+        request.headers.get('x-requested-with') == 'XMLHttpRequest'
+        or 'application/json' in request.headers.get('accept', '')
+    )
+
+
+def _json_error(message: str, code: str, status: int = 400) -> JsonResponse:
+    return JsonResponse({'ok': False, 'error': code, 'message': message}, status=status)
+
+
+def validate_resource_name(name: str) -> str | None:
+    """Возвращает текст ошибки для недопустимого имени или None."""
+    if not name:
+        return 'Имя не может быть пустым.'
+    if name in ('.', '..'):
+        return 'Недопустимое имя.'
+    if len(name) > MAX_RESOURCE_NAME_LENGTH:
+        return f'Имя слишком длинное (максимум {MAX_RESOURCE_NAME_LENGTH} символов).'
+    if INVALID_NAME_CHARS.search(name):
+        return 'Имя не должно содержать символы \\ / : * ? " < > |.'
+    return None
+
+
 # --- Main View ---
 
 async def index(request: HttpRequest) -> HttpResponse:
@@ -247,6 +275,10 @@ async def index(request: HttpRequest) -> HttpResponse:
         'dir_count': 0,
         'file_count': 0,
         'file_extension_icons': FILE_EXTENSION_ICONS,
+        'disk_mode': False,
+        'has_disk_access': False,
+        'can_write': False,
+        'view_mode': 'public',
     }
 
     # Get parameters from GET request
@@ -276,16 +308,19 @@ async def index(request: HttpRequest) -> HttpResponse:
     public_url_from_post = request.POST.get('public_url', '').strip() if request.method == 'POST' else ''
     session_public_key = await get_session_value(request, 'public_key')
     force_disk = request.GET.get('source') == 'disk'
+    force_public = request.GET.get('source') == 'public'
 
     token = await get_yandex_token(request)
 
     public_url = public_url_from_post or public_url_from_query
-    if not public_url and not force_disk:
+    if not public_url and not force_disk and not force_public:
         public_url = session_public_key
 
-    disk_mode = bool(token) and not public_url
+    disk_mode = bool(token) and not public_url and not force_public
     context['disk_mode'] = disk_mode
     context['has_disk_access'] = bool(token)
+    context['can_write'] = disk_mode and bool(token)
+    context['view_mode'] = 'disk' if disk_mode else 'public'
 
     context['public_url'] = public_url or ''
     context['current_page_size'] = page_size
@@ -293,6 +328,9 @@ async def index(request: HttpRequest) -> HttpResponse:
     context['upload_status'] = request.GET.get('upload')
 
     if force_disk:
+        await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
+
+    if force_public:
         await clear_session_keys(request, ['public_key', 'resource_type', 'resource_name'])
 
     if not public_url and not disk_mode:
@@ -431,6 +469,8 @@ async def index(request: HttpRequest) -> HttpResponse:
                     'current_page': page_num,
                     'total_pages': total_pages,
                     'total_items': total_items,
+                    'start_index': min(total_items, (page_num - 1) * page_size + 1),
+                    'end_index': min(total_items, page_num * page_size),
                     'has_previous': page_num > 1,
                     'has_next': page_num < total_pages,
                     'page_range': range(max(1, page_num - 3), min(total_pages + 1, page_num + 4)),
@@ -829,65 +869,132 @@ async def download_zip(request: HttpRequest) -> HttpResponse:
 
 @require_POST
 def upload_file(request: HttpRequest) -> HttpResponse:
-    """Загружает файл на собственный диск пользователя (требует cloud_api:disk.write)."""
+    """Загружает файл на собственный диск пользователя (AJAX или обычный POST)."""
+    wants_json = _wants_json(request)
     index_url = reverse('viewer:index')
     view_mode = request.session.get('view_mode', 'public')
     if view_mode != 'disk':
+        if wants_json:
+            return _json_error('Загрузка доступна только в режиме «Мой диск».', 'public_mode', 403)
         return redirect(index_url)
 
     token = _get_yandex_token_sync(request)
     if not token:
+        if wants_json:
+            return _json_error('Сессия авторизации истекла — войдите через Яндекс заново.', 'nologin', 401)
         return redirect(f"{index_url}?source=disk&upload=nologin")
 
     uploaded = request.FILES.get('file')
     if not uploaded:
+        if wants_json:
+            return _json_error('Файл не выбран.', 'empty')
         return redirect(f"{index_url}?source=disk&upload=empty")
 
     current_path = request.POST.get('path') or request.session.get('current_path', '/')
     folder_path = normalize_disk_path(current_path)
     file_name = PurePath(uploaded.name.replace('\\', '/')).name
+    name_error = validate_resource_name(file_name)
+    if name_error:
+        if wants_json:
+            return _json_error(name_error, 'invalid_name')
+        return redirect(f"{index_url}?source=disk&upload=error")
+
     target_path = folder_path.rstrip('/') + '/' + file_name
+    overwrite = request.POST.get('overwrite', 'true').lower() != 'false'
 
     back_url = f"{index_url}?source=disk&path={quote(folder_path, safe='')}"
-    logger.info(f"Загрузка файла '{target_path}' на свой диск ({uploaded.size} байт).")
+    logger.info(f"Загрузка файла '{target_path}' на свой диск ({uploaded.size} байт, overwrite={overwrite}).")
+
+    href, link_error = get_disk_upload_link_sync(token, target_path, overwrite=overwrite)
+    if not href:
+        messages_map = {
+            'noperm': ('Нет права записи. Добавьте в приложении Яндекса доступ «Яндекс.Диск REST API» с записью и войдите заново.', 403),
+            'exists': ('Файл с таким именем уже существует.', 409),
+            'network': ('Не удалось связаться с Яндекс.Диском.', 502),
+            'error': ('Не удалось подготовить загрузку файла.', 502),
+        }
+        message, status = messages_map.get(link_error, messages_map['error'])
+        logger.warning(f"Загрузка '{target_path}' отклонена: {link_error}")
+        if wants_json:
+            return _json_error(message, link_error or 'error', status)
+        upload_code = 'noperm' if link_error == 'noperm' else 'error'
+        return redirect(f"{back_url}&upload={upload_code}")
 
     try:
-        link_resp = requests.get(
-            DISK_UPLOAD_API_URL,
-            params={'path': target_path, 'overwrite': 'true'},
-            headers={'Authorization': f'OAuth {token}'},
-            timeout=30,
+        put_resp = requests.put(
+            href,
+            data=uploaded,
+            headers={'Content-Type': 'application/octet-stream'},
+            timeout=(30, 7200),
         )
-        if link_resp.status_code in (401, 403):
-            logger.warning(f"Нет права записи на Диск: {link_resp.status_code} {link_resp.text[:200]}")
-            return redirect(f"{back_url}&upload=noperm")
-        if link_resp.status_code != 200:
-            logger.error(f"Не удалось получить ссылку на загрузку: {link_resp.status_code} {link_resp.text[:200]}")
-            return redirect(f"{back_url}&upload=error")
-
-        href = (link_resp.json() or {}).get('href')
-        if not href:
-            logger.error("В ответе API нет href для загрузки.")
-            return redirect(f"{back_url}&upload=error")
-
-        with uploaded.open('rb') as file_obj:
-            put_resp = requests.put(
-                href,
-                data=file_obj,
-                headers={'Content-Type': 'application/octet-stream'},
-                timeout=(30, 7200),
-            )
-
-        if put_resp.status_code not in (200, 201, 202, 204):
-            logger.error(f"Ошибка загрузки файла: {put_resp.status_code} {put_resp.text[:200]}")
-            return redirect(f"{back_url}&upload=error")
-
-        logger.info(f"Файл '{target_path}' успешно загружен.")
     except requests.RequestException as e:
         logger.exception(f"Сетевая ошибка при загрузке файла '{target_path}': {e}")
+        if wants_json:
+            return _json_error('Сетевая ошибка при загрузке файла.', 'network', 502)
         return redirect(f"{back_url}&upload=error")
 
+    if put_resp.status_code not in (200, 201, 202, 204):
+        logger.error(f"Ошибка загрузки файла '{target_path}': {put_resp.status_code} {put_resp.text[:200]}")
+        if wants_json:
+            return _json_error(f'Яндекс.Диск вернул ошибку {put_resp.status_code}.', 'error', 502)
+        return redirect(f"{back_url}&upload=error")
+
+    logger.info(f"Файл '{target_path}' успешно загружен.")
+    if wants_json:
+        return JsonResponse({
+            'ok': True,
+            'name': file_name,
+            'path': target_path,
+            'size': uploaded.size,
+        })
     return redirect(f"{back_url}&upload=ok")
+
+
+@require_POST
+def create_folder(request: HttpRequest) -> HttpResponse:
+    """Создаёт папку на собственном диске пользователя."""
+    wants_json = _wants_json(request)
+    index_url = reverse('viewer:index')
+    view_mode = request.session.get('view_mode', 'public')
+    if view_mode != 'disk':
+        if wants_json:
+            return _json_error('Создание папок доступно только в режиме «Мой диск».', 'public_mode', 403)
+        return redirect(index_url)
+
+    token = _get_yandex_token_sync(request)
+    if not token:
+        if wants_json:
+            return _json_error('Сессия авторизации истекла — войдите через Яндекс заново.', 'nologin', 401)
+        return redirect(f"{index_url}?source=disk&upload=nologin")
+
+    name = (request.POST.get('name') or '').strip()
+    name_error = validate_resource_name(name)
+    if name_error:
+        if wants_json:
+            return _json_error(name_error, 'invalid_name')
+        return redirect(index_url)
+
+    base_path = normalize_disk_path(request.POST.get('path') or request.session.get('current_path', '/'))
+    target_path = base_path.rstrip('/') + '/' + name
+    logger.info(f"Создание папки '{target_path}' на своём диске.")
+
+    success, error_code = create_disk_folder_sync(token, target_path)
+    if not success:
+        messages_map = {
+            'exists': ('Папка с таким именем уже существует.', 409),
+            'noperm': ('Нет права создавать папки на Диске.', 403),
+            'network': ('Не удалось связаться с Яндекс.Диском.', 502),
+            'error': ('Не удалось создать папку.', 502),
+        }
+        message, status = messages_map.get(error_code, messages_map['error'])
+        if wants_json:
+            return _json_error(message, error_code or 'error', status)
+        return redirect(f"{index_url}?source=disk&upload=error")
+
+    logger.info(f"Папка '{target_path}' успешно создана.")
+    if wants_json:
+        return JsonResponse({'ok': True, 'name': name, 'path': target_path})
+    return redirect(f"{index_url}?source=disk&path={quote(base_path, safe='')}&upload=folder_ok")
 
 
 def login_view(request):

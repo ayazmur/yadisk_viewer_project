@@ -1,7 +1,39 @@
 from django import template
+from django.utils import timezone
+from datetime import datetime
 from urllib.parse import urlencode
 
 register = template.Library()
+
+MONTHS_RU = (
+    'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+    'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+)
+
+
+@register.filter
+def human_date(value):
+    """Короткая дата в стиле Яндекс.Диска: «сегодня 14:05», «вчера», «12 мая 2024»."""
+    if not value:
+        return ''
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        except ValueError:
+            return value
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value)
+    local = timezone.localtime(value)
+    today = timezone.localtime(timezone.now()).date()
+    delta_days = (today - local.date()).days
+
+    if delta_days == 0:
+        return f"сегодня {local:%H:%M}"
+    if delta_days == 1:
+        return 'вчера'
+    if local.year == today.year:
+        return f"{local.day} {MONTHS_RU[local.month - 1]}"
+    return f"{local.day} {MONTHS_RU[local.month - 1]} {local.year}"
 
 @register.simple_tag
 def dict_set(dictionary, key, value):
@@ -15,6 +47,20 @@ def dict_del(dictionary, key):
     if key in new_dict:
         del new_dict[key]
     return new_dict
+
+
+@register.simple_tag
+def nav_params(query_dict, disk_mode=False, **kwargs):
+    """Копия GET-параметров для ссылки: сохраняет режим и меняет/удаляет ключи."""
+    params = query_dict.copy()
+    if disk_mode:
+        params['source'] = 'disk'
+    for key, value in kwargs.items():
+        if value is None:
+            params.pop(key, None)
+        else:
+            params[key] = value
+    return params
 
 @register.filter
 def filter_files(items):

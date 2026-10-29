@@ -1,5 +1,6 @@
 import aiohttp
 import logging
+import requests
 from urllib.parse import urlencode, urlparse, quote
 import hashlib
 import asyncio
@@ -227,6 +228,64 @@ DISK_UPLOAD_API_URL = "https://cloud-api.yandex.net/v1/disk/resources/upload"
 
 def _disk_headers(token: str) -> dict[str, str]:
     return {'Authorization': f'OAuth {token}'}
+
+
+def create_disk_folder_sync(token: str, path: str) -> tuple[bool, str | None]:
+    """Создаёт папку на диске. Возвращает (успех, код ошибки)."""
+    try:
+        response = requests.put(
+            DISK_RESOURCES_API_URL,
+            params={'path': normalize_disk_path(path)},
+            headers=_disk_headers(token),
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        logger.error(f"Сетевая ошибка при создании папки '{path}': {e}")
+        return False, 'network'
+
+    if response.status_code in (200, 201):
+        return True, None
+    if response.status_code == 409:
+        return False, 'exists'
+    if response.status_code in (401, 403):
+        logger.warning(f"Нет права создавать папку '{path}': {response.status_code}")
+        return False, 'noperm'
+
+    logger.error(f"Ошибка создания папки '{path}': {response.status_code} {response.text[:200]}")
+    return False, 'error'
+
+
+def get_disk_upload_link_sync(
+    token: str,
+    path: str,
+    overwrite: bool = True,
+) -> tuple[str | None, str | None]:
+    """Запрашивает ссылку для загрузки файла. Возвращает (href, код ошибки)."""
+    try:
+        response = requests.get(
+            DISK_UPLOAD_API_URL,
+            params={'path': normalize_disk_path(path), 'overwrite': 'true' if overwrite else 'false'},
+            headers=_disk_headers(token),
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        logger.error(f"Сетевая ошибка при получении ссылки на загрузку '{path}': {e}")
+        return None, 'network'
+
+    if response.status_code == 200:
+        href = (response.json() or {}).get('href')
+        if href:
+            return href, None
+        logger.error(f"API не вернул href для загрузки '{path}'")
+        return None, 'error'
+    if response.status_code == 409:
+        return None, 'exists'
+    if response.status_code in (401, 403):
+        logger.warning(f"Нет права загружать файл '{path}': {response.status_code}")
+        return None, 'noperm'
+
+    logger.error(f"Ошибка получения ссылки на загрузку '{path}': {response.status_code} {response.text[:200]}")
+    return None, 'error'
 
 
 def normalize_disk_path(path: str | None) -> str:
