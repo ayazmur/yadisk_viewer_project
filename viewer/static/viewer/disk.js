@@ -220,7 +220,21 @@
         }
     });
 
-    function closeImageModal() {
+    function resetMediaElement(element) {
+        if (!element) {
+            return;
+        }
+        try {
+            element.pause();
+        } catch (e) {}
+        element.hidden = true;
+        element.removeAttribute('src');
+        try {
+            element.load();
+        } catch (e) {}
+    }
+
+    function closeMediaModal() {
         var modal = $('#imagePreviewModal');
         var image = $('#modalImage');
         var caption = $('#modalCaption');
@@ -229,44 +243,82 @@
         }
         modal.classList.remove('open');
         if (image) {
-            image.src = '';
+            image.hidden = false;
+            image.removeAttribute('src');
         }
+        resetMediaElement($('#modalVideo'));
+        resetMediaElement($('#modalAudio'));
         if (caption) {
             caption.textContent = '';
         }
     }
 
+    function openMediaModal(kind, url, title) {
+        var modal = $('#imagePreviewModal');
+        var image = $('#modalImage');
+        var video = $('#modalVideo');
+        var audio = $('#modalAudio');
+        var caption = $('#modalCaption');
+        if (!modal || !image) {
+            return;
+        }
+
+        resetMediaElement(video);
+        resetMediaElement(audio);
+        image.hidden = true;
+        image.removeAttribute('src');
+
+        if (kind === 'video' && video) {
+            video.hidden = false;
+            video.src = url;
+            var playResult = video.play();
+            if (playResult && playResult.catch) {
+                playResult.catch(function () {});
+            }
+        } else if (kind === 'audio' && audio) {
+            audio.hidden = false;
+            audio.src = url;
+            var audioPlay = audio.play();
+            if (audioPlay && audioPlay.catch) {
+                audioPlay.catch(function () {});
+            }
+        } else {
+            image.hidden = false;
+            image.src = url;
+        }
+
+        if (caption) {
+            caption.textContent = title || '';
+        }
+        modal.classList.add('open');
+        var closeButton = $('.modal-close', modal);
+        if (closeButton) {
+            closeButton.focus();
+        }
+    }
+
     document.addEventListener('click', function (event) {
-        var preview = event.target.closest && event.target.closest('.file-preview');
-        if (preview) {
+        var trigger = event.target.closest && event.target.closest('.preview-trigger, .file-preview');
+        if (trigger) {
             event.preventDefault();
-            var modal = $('#imagePreviewModal');
-            var image = $('#modalImage');
-            var caption = $('#modalCaption');
-            if (!modal || !image) {
+            var url = trigger.dataset.previewUrl || trigger.dataset.fullsize;
+            if (!url) {
                 return;
             }
-            var full = preview.dataset.fullsize || preview.src;
-            image.src = full;
-            if (caption) {
-                caption.textContent = preview.alt || '';
-            }
-            modal.classList.add('open');
-            var closeButton = $('.modal-close', modal);
-            if (closeButton) {
-                closeButton.focus();
-            }
+            var kind = trigger.dataset.mediaKind || 'image';
+            var title = trigger.dataset.title || trigger.getAttribute('alt') || '';
+            openMediaModal(kind, url, title);
             return;
         }
         var modal = $('#imagePreviewModal');
         if (modal && modal.classList.contains('open') && event.target === modal) {
-            closeImageModal();
+            closeMediaModal();
         }
     });
 
     var modalCloseButton = $('.modal-close');
     if (modalCloseButton) {
-        modalCloseButton.addEventListener('click', closeImageModal);
+        modalCloseButton.addEventListener('click', closeMediaModal);
     }
 
     /* ---------- Region refresh ---------- */
@@ -961,7 +1013,7 @@
         if (event.key !== 'Escape') {
             return;
         }
-        closeImageModal();
+        closeMediaModal();
         closeFolderModal();
         setSidebar(false);
     });

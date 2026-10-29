@@ -2,6 +2,7 @@ from django import template
 from django.utils import timezone
 from datetime import datetime
 from urllib.parse import urlencode
+import mimetypes
 
 register = template.Library()
 
@@ -9,6 +10,20 @@ MONTHS_RU = (
     'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
     'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
 )
+
+
+@register.filter
+def media_kind(filename):
+    """Возвращает image/video/audio/pdf для файлов, которые можно открыть в браузере."""
+    mime_type, _ = mimetypes.guess_type(filename or '')
+    if not mime_type:
+        return ''
+    major = mime_type.split('/')[0]
+    if major in ('image', 'video', 'audio'):
+        return major
+    if mime_type == 'application/pdf':
+        return 'pdf'
+    return ''
 
 
 @register.filter

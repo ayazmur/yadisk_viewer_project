@@ -176,13 +176,18 @@
                                         </span>
                                     </li>
                                 {% else %}
+                                    {% with media=item.name|media_kind %}
                                     <li class="file-row is-file" data-name="{{ item.name|lower }}" data-size="{{ item.size|default:0 }}">
                                         <span class="check-cell">
                                             <input type="checkbox" name="selected_files" value="{{ item.normalized_api_path }}" aria-label="Выбрать {{ item.name }}">
                                         </span>
                                         <span class="icon-cell">
                                             {% if item.preview %}
-                                                <img src="{{ item.preview }}" alt="" class="file-preview" data-fullsize="{{ item.file }}" loading="lazy" onerror="this.onerror=null;this.src='{% static 'viewer/file.svg' %}';">
+                                                <img src="{{ item.preview }}" alt="" class="file-preview"
+                                                     data-fullsize="{% if item.url_path is not None %}{% url 'viewer:preview_file' file_path=item.url_path %}{% else %}{{ item.file }}{% endif %}"
+                                                     data-media-kind="{{ media|default:'image' }}"
+                                                     data-title="{{ item.name }}"
+                                                     loading="lazy" onerror="this.onerror=null;this.src='{% static 'viewer/file.svg' %}';">
                                             {% elif item.icon_path and item.icon_path != 'file.svg' %}
                                                 <img src="{% static item.icon_path %}" alt="" class="file-icon">
                                             {% else %}
@@ -190,18 +195,35 @@
                                             {% endif %}
                                         </span>
                                         <span class="name-cell">
-                                            <span class="row-name" title="{{ item.name }}">{{ item.name }}</span>
+                                            {% if item.url_path is not None and media == 'pdf' %}
+                                                <a class="row-name" href="{% url 'viewer:preview_file' file_path=item.url_path %}" target="_blank" rel="noopener" title="{{ item.name }}">{{ item.name }}</a>
+                                            {% elif item.url_path is not None and media %}
+                                                <a class="row-name preview-trigger" href="#"
+                                                   data-preview-url="{% url 'viewer:preview_file' file_path=item.url_path %}"
+                                                   data-media-kind="{{ media }}" data-title="{{ item.name }}"
+                                                   title="Открыть {{ item.name }}">{{ item.name }}</a>
+                                            {% else %}
+                                                <span class="row-name" title="{{ item.name }}">{{ item.name }}</span>
+                                            {% endif %}
                                         </span>
                                         <span class="size-cell muted">{{ item.size|default:0|filesizeformat }}</span>
                                         <span class="modified-cell muted">{{ item.modified|human_date|default:"—" }}</span>
                                         <span class="actions-cell">
                                             {% if item.url_path is not None %}
+                                                {% if media == 'pdf' %}
+                                                    <a href="{% url 'viewer:preview_file' file_path=item.url_path %}" target="_blank" rel="noopener" class="row-action">Открыть</a>
+                                                {% elif media %}
+                                                    <button type="button" class="row-action preview-trigger"
+                                                            data-preview-url="{% url 'viewer:preview_file' file_path=item.url_path %}"
+                                                            data-media-kind="{{ media }}" data-title="{{ item.name }}">Смотреть</button>
+                                                {% endif %}
                                                 <a href="{% url 'viewer:download_file' file_path=item.url_path %}" class="row-action" title="Скачать {{ item.name }}" download>Скачать</a>
                                             {% else %}
                                                 <span class="row-action disabled">Нет ссылки</span>
                                             {% endif %}
                                         </span>
                                     </li>
+                                    {% endwith %}
                                 {% endif %}
                             {% empty %}
                                 <li class="empty-state">
@@ -265,10 +287,18 @@
                 {% endif %}
 
             {% elif data.type == 'file' %}
+                {% with media=data.name|media_kind %}
                 <div class="single-file-card">
-                    <div class="single-file-preview">
-                        {% if data.preview %}
-                            <img src="{{ data.preview }}" alt="{{ data.name }}" class="file-preview" data-fullsize="{{ data.file }}" onerror="this.onerror=null;this.src='{% static 'viewer/file.svg' %}';">
+                    <div class="single-file-preview {% if media == 'video' %}is-video{% endif %}">
+                        {% if media == 'video' and data.url_path is not None %}
+                            <video class="single-file-media" controls playsinline preload="metadata" src="{% url 'viewer:preview_file' file_path=data.url_path %}"></video>
+                        {% elif media == 'audio' and data.url_path is not None %}
+                            <audio controls preload="metadata" src="{% url 'viewer:preview_file' file_path=data.url_path %}"></audio>
+                        {% elif data.preview %}
+                            <img src="{{ data.preview }}" alt="{{ data.name }}" class="file-preview"
+                                 data-fullsize="{% if data.url_path is not None %}{% url 'viewer:preview_file' file_path=data.url_path %}{% else %}{{ data.file }}{% endif %}"
+                                 data-media-kind="{{ media|default:'image' }}" data-title="{{ data.name }}"
+                                 onerror="this.onerror=null;this.src='{% static 'viewer/file.svg' %}';">
                         {% else %}
                             <img src="{% static 'viewer/file.svg' %}" alt="" class="file-icon-large">
                         {% endif %}
@@ -278,11 +308,15 @@
                         <p class="muted">{{ data.size|default:0|filesizeformat }}{% if data.modified %} · {{ data.modified|human_date }}{% endif %}</p>
                         <div class="single-file-actions">
                             {% if data.url_path is not None %}
+                                {% if media == 'pdf' %}
+                                    <a class="btn btn-secondary" href="{% url 'viewer:preview_file' file_path=data.url_path %}" target="_blank" rel="noopener">Открыть</a>
+                                {% endif %}
                                 <a class="btn btn-primary" href="{% url 'viewer:download_file' file_path=data.url_path %}" download>Скачать</a>
                             {% endif %}
                         </div>
                     </div>
                 </div>
+                {% endwith %}
             {% elif not error %}
                 <div class="empty-state">
                     <p>Не удалось отобразить содержимое. Возможно, ссылка указывает на пустой ресурс.</p>

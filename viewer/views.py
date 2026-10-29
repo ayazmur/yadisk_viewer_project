@@ -52,8 +52,7 @@ UPLOAD_CHUNK_MIN_BYTES = 256 * 1024
 UPLOAD_CHUNK_MAX_BYTES = 16 * 1024 * 1024
 UPLOAD_ID_RE = re.compile(r'^[0-9a-f]{32}$')
 
-FILE_EXTENSION_ICONS = {
-    'pdf': 'pdf',
+FILE_EXTENSION_ICONS = {    'pdf': 'pdf',
     'doc': 'doc',
     'docx': 'doc',
     'xls': 'xls',
@@ -83,6 +82,31 @@ FILE_EXTENSION_ICONS = {
     'mkv': 'mp4',
     'webm': 'mp4',
 }
+
+INLINE_FALLBACK_MIME = {
+    '.webp': 'image/webp',
+    '.heic': 'image/heic',
+    '.avif': 'image/avif',
+    '.mkv': 'video/x-matroska',
+    '.mov': 'video/quicktime',
+    '.avi': 'video/x-msvideo',
+    '.m4v': 'video/mp4',
+    '.webm': 'video/webm',
+    '.flac': 'audio/flac',
+    '.ogg': 'audio/ogg',
+    '.oga': 'audio/ogg',
+    '.wav': 'audio/wav',
+    '.m4a': 'audio/mp4',
+}
+
+INLINE_STREAM_CHUNK_SIZE = 64 * 1024
+
+
+def guess_inline_mime(filename: str) -> str:
+    mime_type, _ = mimetypes.guess_type(filename or '')
+    if mime_type:
+        return mime_type
+    return INLINE_FALLBACK_MIME.get(PurePath(filename or '').suffix.lower(), 'application/octet-stream')
 
 
 def get_extension_icon(filename: str) -> str:
@@ -656,6 +680,111 @@ async def download_file(request: HttpRequest, file_path: str) -> HttpResponse:
 
     logger.info(f"Стриминг файла '{file_name}' через сервер клиенту.")
     return response
+
+@require_GET
+async def preview_file(request: HttpRequest, file_path: str) -> HttpResponse:
+    """Отдаёт файл inline с поддержкой Range для просмотра фото/видео в браузере."""
+    public_key = await get_session_value(request, 'public_key')
+    base_resource_type = await get_session_value(request, 'resource_type')
+    view_mode = await get_session_value(request, 'view_mode', 'public')
+    disk_mode = view_mode == 'disk'
+    token = await get_yandex_token(request) if disk_mode else None
+
+    if disk_mode and not token:
+        raise Http404("Сессия авторизации истекла. Войдите через Яндекс заново.")
+    if not disk_mode and not public_key:
+        raise Http404("Сессия истекла или не найдена. Введите ссылку заново.")
+
+    try:
+        clean_path_str = Path(unquote(file_path).replace('\\', '/')).as_posix().lstrip('/')
+    except Exception as e:
+        logger.error(f"Ошибка декодирования пути для просмотра '{file_path}': {e}")
+        raise Http404("Некорректный путь файла.")
+
+    file_name = PurePath(clean_path_str).name or 'file'
+    content_type = guess_inline_mime(file_name)
+
+    async with aiohttp.ClientSession() as link_session:
+        if disk_mode:
+            download_url = await get_disk_download_link(
+                token, normalize_disk_path(clean_path_str), session=link_session
+            )
+        else:
+            path_to_request = f"/{clean_path_str}" if base_resource_type == 'dir' and clean_path_str else None
+            download_url = await get_public_resource_download_link(
+                public_key, path=path_to_request, session=link_session
+            )
+
+    if not download_url:
+        logger.warning(f"Не удалось получить ссылку для просмотра '{clean_path_str}'.")
+        raise Http404(f"Не удалось получить ссылку для файла '{file_name}'.")
+
+    upstream_headers = {
+        'User-Agent': 'YadiskViewerApp/1.0 (+https://github.com/ayazmur/yadisk_viewer_project)',
+    }
+    range_header = request.headers.get('Range')
+    if range_header:
+        upstream_headers['Range'] = range_header
+
+    media_session = aiohttp.ClientSession()
+    try:
+        upstream = await media_session.get(
+            download_url,
+            headers=upstream_headers,
+            timeout=aiohttp.ClientTimeout(total=None, connect=60, sock_read=3600),
+            allow_redirects=True,
+        )
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        await media_session.close()
+        logger.warning(f"Не удалось открыть поток '{file_name}': {e}")
+        raise Http404("Не удалось открыть файл для просмотра.")
+
+    if upstream.status == 416:
+        content_range = upstream.headers.get('Content-Range', '')
+        upstream.release()
+        await media_session.close()
+        response = HttpResponse(status=416)
+        if content_range:
+            response['Content-Range'] = content_range
+        return response
+
+    if upstream.status not in (200, 206):
+        logger.error(f"Ошибка потока '{file_name}': HTTP {upstream.status}")
+        upstream.release()
+        await media_session.close()
+        raise Http404("Не удалось открыть файл для просмотра.")
+
+    async def stream_body():
+        try:
+            async for chunk in upstream.content.iter_chunked(INLINE_STREAM_CHUNK_SIZE):
+                yield chunk
+        except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError) as e:
+            logger.warning(f"Поток '{file_name}' прерван: {e}")
+        finally:
+            upstream.release()
+            await media_session.close()
+
+    response = StreamingHttpResponse(
+        stream_body(),
+        status=206 if upstream.status == 206 else 200,
+        content_type=content_type,
+    )
+    response['Accept-Ranges'] = 'bytes'
+    response['Cache-Control'] = 'private, max-age=600'
+    if upstream.headers.get('Content-Range'):
+        response['Content-Range'] = upstream.headers['Content-Range']
+    if upstream.headers.get('Content-Length'):
+        response['Content-Length'] = upstream.headers['Content-Length']
+
+    try:
+        ascii_name = file_name.encode('ascii').decode('ascii')
+        response['Content-Disposition'] = f'inline; filename="{ascii_name}"'
+    except UnicodeEncodeError:
+        response['Content-Disposition'] = f"inline; filename*=UTF-8''{quote(file_name)}"
+
+    logger.info(f"Inline-просмотр '{file_name}' ({content_type}, range={bool(range_header)}).")
+    return response
+
 
 async def _fetch_download_links(public_key: str, api_paths: List[str], session: aiohttp.ClientSession, token: str | None = None) -> Tuple[List[Dict[str, str]], List[str]]:
     link_tasks = []
