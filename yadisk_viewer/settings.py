@@ -167,7 +167,7 @@ CACHES = {
 }
 
 AUTHENTICATION_BACKENDS = [
-    'social_core.backends.yandex.YandexOAuth2',
+    'viewer.social_backends.TolerantYandexOAuth2',
     'django.contrib.auth.backends.ModelBackend',
 ]
 
@@ -175,6 +175,7 @@ LOGIN_URL = '/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_URL = '/logout/'
 LOGOUT_REDIRECT_URL = '/'
+CSRF_FAILURE_VIEW = 'viewer.views.csrf_failure'
 
 SOCIAL_AUTH_YANDEX_OAUTH2_KEY = os.environ.get('YANDEX_OAUTH2_KEY', '')
 SOCIAL_AUTH_YANDEX_OAUTH2_SECRET = os.environ.get('YANDEX_OAUTH2_SECRET', '')

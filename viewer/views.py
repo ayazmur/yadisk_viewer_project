@@ -1002,6 +1002,24 @@ def login_view(request):
     begin_url = reverse('social:begin', kwargs={'backend': 'yandex-oauth2'})
     return redirect(f"{begin_url}?{urlencode({'next': next_url})}")
 
+
+def csrf_failure(request: HttpRequest, reason: str = '') -> HttpResponse:
+    logger.warning(f"CSRF failure: {reason}")
+    return HttpResponse(
+        '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<title>Обновите страницу</title></head>'
+        '<body style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;'
+        'max-width:520px;margin:80px auto;padding:0 20px;line-height:1.5">'
+        '<h1 style="font-size:22px">Сессия обновилась</h1>'
+        '<p>Форма была открыта до входа или обновления сессии, поэтому защитный '
+        'токен устарел. Вернитесь на главную и повторите действие.</p>'
+        '<p><a href="/">← На главную</a></p>'
+        '</body></html>',
+        status=403,
+        content_type='text/html; charset=utf-8',
+    )
+
 def logout_view(request):
     logout(request)
     return redirect(settings.LOGOUT_REDIRECT_URL)
