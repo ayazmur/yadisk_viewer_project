@@ -6,7 +6,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Яндекс.Диск{% endblock %}</title>
-    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=2.0">
+    <link rel="stylesheet" href="{% static 'viewer/style.css' %}?v=2.1">
     <script>
         (function () {
             try {
@@ -177,7 +177,7 @@
         indexUrl: "{% url 'viewer:index' %}"
     };
 </script>
-<script src="{% static 'viewer/disk.js' %}?v=2.0"></script>
+<script src="{% static 'viewer/disk.js' %}?v=2.1"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>
